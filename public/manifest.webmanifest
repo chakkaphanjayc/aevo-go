@@ -1,0 +1,11 @@
+{
+  "name": "Aevocado Go",
+  "short_name": "Aevo Go",
+  "description": "Aevocado customer experience",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#06050a",
+  "theme_color": "#06050a",
+  "lang": "th",
+  "icons": []
+}

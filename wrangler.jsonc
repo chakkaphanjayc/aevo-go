@@ -1,0 +1,45 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "aevo-go",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-09-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "AEVO_APP_CODE": "GO",
+    "AEVO_ENVIRONMENT": "preview",
+    "AEVO_API_ORIGIN": ""
+  },
+  "env": {
+    "preview": {
+      "name": "aevo-go-preview",
+      "vars": {
+        "AEVO_APP_CODE": "GO",
+        "AEVO_ENVIRONMENT": "preview",
+        "AEVO_API_ORIGIN": ""
+      }
+    },
+    "staging": {
+      "name": "aevo-go-staging",
+      "vars": {
+        "AEVO_APP_CODE": "GO",
+        "AEVO_ENVIRONMENT": "staging",
+        "AEVO_API_ORIGIN": ""
+      }
+    },
+    "production": {
+      "name": "aevo-go-production",
+      "vars": {
+        "AEVO_APP_CODE": "GO",
+        "AEVO_ENVIRONMENT": "production",
+        "AEVO_API_ORIGIN": ""
+      }
+    }
+  }
+}
