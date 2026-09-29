@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { ExploreTraceDetail } from "@/features/discovery/explore-trace-detail";
@@ -33,5 +33,77 @@ describe("ExploreTraceDetail visual storytelling itinerary", () => {
     expect(screen.getByText("จองผ่าน Aevo Play")).toBeInTheDocument();
     expect(screen.getByText("COMMUNITY PROOF")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "ความคิดเห็น" })).toBeInTheDocument();
+  });
+
+  it("keeps an unavailable partner booking inline instead of navigating to a store error page", () => {
+    const trace = demoTraces[0];
+    render(
+      <MemoryRouter>
+        <ExploreTraceDetail
+          trace={trace}
+          demoMode
+          creatorFollowing={false}
+          creatorFollowPending={false}
+          handlers={{}}
+          onClose={() => undefined}
+          onFollowCreator={() => undefined}
+          onStartJourney={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    const bookingButton = screen.getByRole("button", {
+      name: "จอง North Star Coffee ผ่าน Aevo Play",
+    });
+    expect(screen.queryByRole("link", { name: "จอง North Star Coffee ผ่าน Aevo Play" })).not.toBeInTheDocument();
+    fireEvent.click(bookingButton);
+    expect(screen.getByText("ข้อมูลการจองยังไม่พร้อม")).toBeInTheDocument();
+    expect(screen.getByText(/ข้อมูลกำลังอยู่ระหว่างการอัปเดต/)).toBeInTheDocument();
+  });
+
+  it("fades media in after the reserved detail geometry is ready", () => {
+    const trace = demoTraces[0];
+    const { container } = render(
+      <MemoryRouter>
+        <ExploreTraceDetail
+          trace={trace}
+          demoMode
+          creatorFollowing={false}
+          creatorFollowPending={false}
+          handlers={{}}
+          onClose={() => undefined}
+          onStartJourney={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    const stage = container.querySelector(".explore-detail-media-stage");
+    const image = container.querySelector(".explore-detail-media-stage__image");
+    expect(stage).not.toHaveClass("is-image-ready");
+    expect(image).toBeInTheDocument();
+
+    fireEvent.load(image as HTMLImageElement);
+
+    expect(stage).toHaveClass("is-image-ready");
+  });
+
+  it("renders a closeable inline fallback when live stop projection is missing", () => {
+    const onClose = () => undefined;
+    render(
+      <MemoryRouter>
+        <ExploreTraceDetail
+          trace={demoTraces[0]}
+          demoMode={false}
+          creatorFollowing={false}
+          creatorFollowPending={false}
+          handlers={{}}
+          onClose={onClose}
+          onStartJourney={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText(/ข้อมูลกำลังอยู่ระหว่างการอัปเดต/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "ย้อนกลับ" }).length).toBeGreaterThan(0);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { feedResponseSchema } from "@/contracts/feed";
+import { feedModuleSchema, feedResponseSchema } from "@/contracts/feed";
 
 describe("Core Feed contract", () => {
   it("accepts a mixed server-ordered page and opaque item tokens", () => {
@@ -38,10 +38,16 @@ describe("Core Feed contract", () => {
       nextCursor: "signed-cursor",
       degraded: false,
       requestId: null,
+      modules: [{
+        moduleId: "FOR_YOU",
+        reasonCode: "BECAUSE_CATEGORY",
+        items: [{ itemType: "PLACE", itemId: "place-1", itemToken: "opaque.place.token" }],
+      }],
     });
 
     expect(response.items.map((item) => item.itemType)).toEqual(["TRACE", "PLACE"]);
     expect(response.items[0]?.itemToken).toBe("opaque.trace.token");
+    expect(response.modules?.[0]?.moduleId).toBe("FOR_YOU");
   });
 
   it("accepts an explicit legacy-to-canonical Place reference on Feed items", () => {
@@ -102,5 +108,18 @@ describe("Core Feed contract", () => {
       nextCursor: null,
       degraded: false,
     })).toThrow();
+  });
+
+  it("rejects a module without a connected canonical projection", () => {
+    expect(feedModuleSchema.safeParse({
+      moduleId: "BOOKABLE_NOW",
+      reasonCode: "AVAILABLE_NOW",
+      items: [],
+    }).success).toBe(false);
+    expect(feedModuleSchema.safeParse({
+      moduleId: "FOR_YOU",
+      reasonCode: null,
+      items: [{ itemType: "PLACE", itemId: "place-1", itemToken: "token-1" }],
+    }).success).toBe(true);
   });
 });

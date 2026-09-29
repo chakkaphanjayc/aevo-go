@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   Compass,
@@ -7,14 +7,13 @@ import {
 } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import type { FeedEventName } from "@/contracts/feed";
-import { CommentThread } from "@/components/comment-thread";
 import { GlidingGroup } from "@/components/gliding-group";
 import { MediaConversationModal } from "@/components/media-conversation-modal";
 import {
   applyTraceDeeTraceAction,
   setTraceDeeTracerFollow,
 } from "@/lib/customer-api";
-import { customerDataMode } from "@/lib/env";
+import { customerDataMode, placeApiMode } from "@/lib/env";
 import { isGatewayOfflineError } from "@/lib/api-client";
 import {
   enqueueFeedEvent,
@@ -22,24 +21,37 @@ import {
   feedEventMetadata,
   feedEventQueue,
 } from "@/lib/feed-events";
-import { getCoreFeedPage } from "@/lib/feed-api";
+import {
+  getCoreFeedFeedbackHistory,
+  getCoreFeedPage,
+  postCoreFeedFeedback,
+} from "@/lib/feed-api";
 import { createIdempotencyKey } from "@/lib/idempotency";
+import { listSavedCanonicalPlaces, setCanonicalPlaceSaved } from "@/lib/place-api";
 import { removeCustomerFavorite, saveCustomerFavorite } from "@/lib/public-api";
 import { getCustomerSession } from "@/lib/session";
 import { beginGoSignIn } from "@/lib/sso";
 import { DiscoveryCard } from "./discovery-cards";
 import { demoDiscoveryItems, filterDemoDiscoveryItems } from "./demo-discovery";
+import { DiscoveryIntentPrompt } from "./discovery-intent-prompt";
+import { DiscoveryModuleShelf } from "./discovery-modules";
 import {
   DiscoveryComposer,
   type DiscoveryComposerDraft,
 } from "./discover-feed-composer";
 import { ExploreDetailEmpty, ExploreTraceDetail } from "./explore-trace-detail";
+import { PlaceInlineDetail } from "./place-inline-detail";
 import { PostInlineDetail } from "./post-inline-detail";
+import { setExploreDetailViewportState } from "./detail-viewport-lock";
 import {
   ExploreBookingPortal,
   parseExplorePortalCategory,
   type ExplorePortalCategory,
 } from "./explore-booking-portal";
+import {
+  resolveFeedFeedbackPersistence,
+  type FeedFeedbackPersistence,
+} from "./feed-feedback-policy";
 import {
   ExploreContextSidebar,
   ExploreInsightsSidebar,
@@ -56,13 +68,68 @@ import {
   type DiscoveryTracer,
   type DiscoveryTracerSummary,
 } from "./types";
-import { coreFeedItemToDiscovery } from "./feed-adapter";
+import { coreFeedItemToDiscovery, feedModulesToDiscovery } from "./feed-adapter";
 
 const feedTabs = [
   { id: "for_you", label: "For you" },
   { id: "following", label: "Following" },
   { id: "nearby", label: "Nearby" },
 ] as const;
+
+type FeedFeedbackReasonCode = "NOT_RELEVANT" | "ALREADY_SEEN" | "TOO_FAR" | "OTHER";
+
+interface DiscoverySelectionAnchor {
+  itemId: string;
+  pageScrollTop: number;
+  feedScrollTop: number;
+  cardTop: number | null;
+}
+
+const DETAIL_CLOSE_DURATION_MS = 220;
+
+const hideReasonOptions: readonly { code: FeedFeedbackReasonCode; label: string }[] = [
+  { code: "NOT_RELEVANT", label: "ไม่เกี่ยวกับสิ่งที่กำลังหา" },
+  { code: "ALREADY_SEEN", label: "เคยเห็นแล้ว" },
+  { code: "TOO_FAR", label: "ไกลเกินไป" },
+  { code: "OTHER", label: "เหตุผลอื่น" },
+];
+
+const hideReasonLabels: Readonly<Record<FeedFeedbackReasonCode, string>> = {
+  NOT_RELEVANT: "ไม่เกี่ยวกับสิ่งที่กำลังหา",
+  ALREADY_SEEN: "เคยเห็นแล้ว",
+  TOO_FAR: "ไกลเกินไป",
+  OTHER: "เหตุผลอื่น",
+};
+
+function safeWindowScrollTo(options: ScrollToOptions): void {
+  if (typeof window === "undefined" || typeof window.scrollTo !== "function") return;
+  if (typeof navigator !== "undefined" && navigator.userAgent?.includes("jsdom")) return;
+  try {
+    window.scrollTo(options);
+  } catch {
+    // JSDOM or environments without full scroll implementation
+  }
+}
+
+function getDocumentScrollTop(): number {
+  if (typeof window === "undefined") return 0;
+  return window.scrollY || document.documentElement.scrollTop || document.body?.scrollTop || 0;
+}
+
+function focusSelectionTarget(target: HTMLElement | null, itemId: string): void {
+  const card = findDiscoveryCard(itemId);
+  const fallback = card?.querySelector<HTMLElement>("button, a, [tabindex]:not([tabindex='-1'])") ?? null;
+  const nextTarget = target && document.contains(target) ? target : fallback;
+  if (!nextTarget || nextTarget.hasAttribute("disabled")) return;
+  nextTarget.focus({ preventScroll: true });
+}
+
+function findDiscoveryCard(itemId: string): HTMLElement | null {
+  if (typeof document === "undefined") return null;
+  return Array.from(
+    document.querySelectorAll<HTMLElement>("[data-discovery-item-id]"),
+  ).find((element) => element.dataset.discoveryItemId === itemId) ?? null;
+}
 
 function updateActionState(
   current: Readonly<Record<string, DiscoveryActionState>>,
@@ -104,10 +171,6 @@ function enqueueExploreFeedEvent(
       }),
     }),
   );
-}
-
-function itemComments(item: DiscoveryItem) {
-  return "comments" in item ? item.comments : [];
 }
 
 function traceFromDiscoveryItem(
@@ -159,6 +222,33 @@ function SkeletonFeed() {
   );
 }
 
+function ExploreDetailSkeleton() {
+  return (
+    <div className="explore-detail-panel explore-detail-panel--skeleton" aria-busy="true" aria-label="กำลังโหลดรายละเอียด">
+      <header className="explore-detail-panel__header explore-detail-story-header">
+        <div className="explore-detail-story-header__copy">
+          <div className="skeleton skeleton--short" style={{ width: "90px", height: "11px", marginBottom: "6px" }} />
+          <div className="skeleton skeleton--wide" style={{ width: "220px", height: "24px", marginBottom: "8px" }} />
+          <div className="explore-detail-story-meta">
+            <span className="skeleton" style={{ width: "26px", height: "26px", borderRadius: "50%" }} />
+            <span className="skeleton skeleton--short" style={{ width: "120px", height: "13px" }} />
+          </div>
+        </div>
+      </header>
+      <div className="explore-detail-panel__body">
+        <div className="explore-detail-hero" style={{ height: "240px" }}>
+          <span className="skeleton" style={{ width: "100%", height: "100%", display: "block" }} />
+        </div>
+        <div style={{ display: "grid", gap: "10px", marginTop: "18px" }}>
+          <span className="skeleton skeleton--wide" style={{ height: "14px", display: "block" }} />
+          <span className="skeleton" style={{ height: "14px", display: "block" }} />
+          <span className="skeleton skeleton--short" style={{ height: "14px", display: "block" }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function InlineRecovery({
   onRetry,
   message = "โหลดคำแนะนำล่าสุดไม่ได้ กำลังแสดงข้อมูลที่บันทึกไว้",
@@ -185,6 +275,7 @@ function InlineRecovery({
 export function ExplorePage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const queryClient = useQueryClient();
   const rawTab = searchParams.get("tab");
   const activeTab: DiscoveryTab = feedTabs.some((tab) => tab.id === rawTab)
     ? (rawTab as DiscoveryTab)
@@ -195,6 +286,11 @@ export function ExplorePage() {
   const activePortalCategory = parseExplorePortalCategory(searchParams.get("category"));
   const bookingDate = searchParams.get("date") ?? "";
   const partySize = searchParams.get("party") ?? "2";
+  const feedCategory =
+    activePortalCategory === "all" || activePortalCategory === "play"
+      ? undefined
+      : activePortalCategory;
+  const feedPartySize = Number(searchParams.get("party"));
   const [input, setInput] = useState(query);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -203,6 +299,12 @@ export function ExplorePage() {
     Record<string, DiscoveryActionState>
   >({});
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  const [hiddenItem, setHiddenItem] = useState<DiscoveryItem | null>(null);
+  const [hiddenFeedbackPersistence, setHiddenFeedbackPersistence] =
+    useState<FeedFeedbackPersistence | null>(null);
+  const [restorePending, setRestorePending] = useState(false);
+  const [pendingHideItem, setPendingHideItem] = useState<DiscoveryItem | null>(null);
+  const [feedbackHistoryOpen, setFeedbackHistoryOpen] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [unsavedIds, setUnsavedIds] = useState<Set<string>>(new Set());
   const [followedIds, setFollowedIds] = useState<Set<string>>(new Set());
@@ -211,11 +313,8 @@ export function ExplorePage() {
   const [unlikedIds, setUnlikedIds] = useState<Set<string>>(new Set());
   const [followedCreatorIds, setFollowedCreatorIds] = useState<Set<string>>(new Set());
   const [unfollowedCreatorIds, setUnfollowedCreatorIds] = useState<Set<string>>(new Set());
-  const [selectedThread, setSelectedThread] = useState<DiscoveryItem | null>(
-    null,
-  );
   const [commentFocusRequest, setCommentFocusRequest] = useState<{
-    traceId: string;
+    itemId: string;
     key: number;
   } | null>(null);
   const [mediaModalOpen, setMediaModalOpen] = useState(false);
@@ -251,14 +350,70 @@ export function ExplorePage() {
     retry: false,
     staleTime: 60_000,
   });
+  const feedbackPersistence = resolveFeedFeedbackPersistence(
+    customerDataMode,
+    Boolean(sessionQuery.data),
+  );
+  const savedPlacesQuery = useQuery({
+    queryKey: [
+      "feed",
+      "saved-places",
+      "explore",
+      sessionQuery.data?.user.id ?? null,
+    ],
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      listSavedCanonicalPlaces({ signal }),
+    enabled:
+      customerDataMode === "live" &&
+      placeApiMode === "canonical" &&
+      Boolean(sessionQuery.data),
+    retry: false,
+    staleTime: 30_000,
+  });
+  const savedCanonicalPlaceIds = useMemo(
+    () => new Set((savedPlacesQuery.data ?? []).map((entry) => entry.placeId)),
+    [savedPlacesQuery.data],
+  );
+  const feedbackHistoryQuery = useQuery({
+    queryKey: [
+      "feed",
+      "feedback-history",
+      "explore",
+      sessionQuery.data?.user.id ?? null,
+    ],
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      getCoreFeedFeedbackHistory(20, { signal }),
+    enabled:
+      customerDataMode === "live" &&
+      feedbackHistoryOpen &&
+      Boolean(sessionQuery.data),
+    retry: false,
+    staleTime: 15_000,
+  });
   const liveFeedQuery = useInfiniteQuery({
-    queryKey: ["feed", "explore", activeTab, query, area],
+    queryKey: [
+      "feed",
+      "explore",
+      activeTab,
+      query,
+      area,
+      vibe,
+      feedCategory,
+      bookingDate,
+      Number.isInteger(feedPartySize) ? feedPartySize : null,
+    ],
     queryFn: ({ signal, pageParam }) =>
       getCoreFeedPage(
         {
           tab: activeTab,
           ...(query ? { query } : {}),
           ...(area ? { area } : {}),
+          ...(vibe ? { vibe } : {}),
+          ...(feedCategory ? { category: feedCategory } : {}),
+          ...(bookingDate ? { date: bookingDate } : {}),
+          ...(Number.isInteger(feedPartySize) && feedPartySize > 0
+            ? { partySize: feedPartySize }
+            : {}),
           ...(pageParam ? { cursor: pageParam } : {}),
           limit: 8,
         },
@@ -285,9 +440,37 @@ export function ExplorePage() {
       );
     const feedPages = liveFeedQuery.data?.pages ?? [];
     return feedPages.flatMap((page) =>
-      page.items.map((item) => coreFeedItemToDiscovery(item, page.feedSessionId)),
+      page.items.map((item) =>
+        coreFeedItemToDiscovery(item, page.feedSessionId, savedCanonicalPlaceIds),
+      ),
     );
-  }, [activeTab, area, createdItems, gatewayOffline, liveFeedQuery.data, query, vibe]);
+  }, [
+    activeTab,
+    area,
+    createdItems,
+    gatewayOffline,
+    liveFeedQuery.data,
+    query,
+    savedCanonicalPlaceIds,
+    vibe,
+  ]);
+
+  const discoveryModules = useMemo(
+    () =>
+      customerDataMode === "live"
+        ? feedModulesToDiscovery(liveFeedQuery.data?.pages[0]?.modules, baseItems)
+        : [],
+    [baseItems, liveFeedQuery.data?.pages]
+  );
+
+  const moduleItemKeys = useMemo(
+    () => new Set(
+      discoveryModules.flatMap((module) =>
+        module.items.map((item) => `${item.itemType}:${item.id}`),
+      ),
+    ),
+    [discoveryModules],
+  );
 
   const items = useMemo(
     () =>
@@ -344,7 +527,9 @@ export function ExplorePage() {
     () =>
       items.filter(
         (item): item is DiscoveryPlace =>
-          item.itemType === "PLACE" && item.isAevoPlayPartner === true,
+          item.itemType === "PLACE" &&
+          item.isAevoPlayPartner === true &&
+          (placeApiMode !== "canonical" || Boolean(item.venueSlug)),
       ),
     [items],
   );
@@ -399,6 +584,14 @@ export function ExplorePage() {
     return selected ?? null;
   }, [items, selectedId]);
 
+  const selectedPlace = useMemo(() => {
+    if (!selectedId) return null;
+    const selected = items.find(
+      (item): item is DiscoveryPlace => item.itemType === "PLACE" && item.id === selectedId,
+    );
+    return selected ?? null;
+  }, [items, selectedId]);
+
   const selectedPostTrace = useMemo(() => {
     if (!selectedPost?.attachedObject || selectedPost.attachedObject.itemType !== "TRACE") return null;
     const attachedId = selectedPost.attachedObject.id;
@@ -409,24 +602,121 @@ export function ExplorePage() {
     ) ?? null;
   }, [items, selectedPost]);
 
-  const detailTrace = selectedTrace ?? selectedPostTrace;
+  // A selected post owns its detail page. The attached trace remains useful
+  // as context, but it must not replace the post when the user chose the post
+  // or its comment icon.
+  const detailTrace = selectedTrace ?? (selectedPost ? null : selectedPostTrace);
   const modalTrace = detailTrace;
   const modalPost = detailTrace ? null : selectedPost;
   const modalCreator = modalPost?.author ?? modalTrace?.creator ?? null;
-  const detailOpen = Boolean(detailTrace || selectedPost);
-  const selectedFeedItemId = selectedTrace?.id ?? selectedPost?.id ?? null;
+  const detailOpen = Boolean(detailTrace || selectedPost || selectedPlace);
+  const selectedFeedItemId = selectedTrace?.id ?? selectedPost?.id ?? selectedPlace?.id ?? null;
 
-  useEffect(() => {
+  const savedPageScrollTopRef = useRef<number | null>(null);
+  const selectionAnchorRef = useRef<DiscoverySelectionAnchor | null>(null);
+  const selectionFocusTargetRef = useRef<HTMLElement | null>(null);
+
+  // Keep the clicked card at the same visual anchor while the DOM changes from
+  // the Facebook-like three-column feed into the master/detail workspace. We
+  // never call scrollIntoView here: it can choose the wrong ancestor and move
+  // the page and the feed column at the same time.
+  useLayoutEffect(() => {
     if (!detailOpen || !selectedFeedItemId) return;
-    const frame = window.requestAnimationFrame(() => {
-      setActiveSpyItemId(selectedFeedItemId);
-      const target = Array.from(
-        feedColumnRef.current?.querySelectorAll<HTMLElement>("[data-discovery-item-id]") ?? [],
-      ).find((element) => element.dataset.discoveryItemId === selectedFeedItemId);
-      target?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    setActiveSpyItemId(selectedFeedItemId);
+
+    const anchor = selectionAnchorRef.current;
+    if (!anchor || anchor.itemId !== selectedFeedItemId) return;
+
+    const restore = () => {
+      const feed = feedColumnRef.current;
+      const card = findDiscoveryCard(selectedFeedItemId);
+      if (!card) return;
+
+      const feedOwnsScroll = Boolean(
+        feed && feed.scrollHeight > feed.clientHeight + 1,
+      );
+      if (feedOwnsScroll && feed) {
+        feed.scrollTop = anchor.feedScrollTop;
+      }
+
+      const currentTop = card.getBoundingClientRect().top;
+      const delta = currentTop - (anchor.cardTop ?? currentTop);
+      if (Math.abs(delta) < 1) return;
+
+      if (feedOwnsScroll && feed) {
+        feed.scrollTop += delta;
+      } else {
+        safeWindowScrollTo({
+          top: anchor.pageScrollTop + delta,
+          behavior: "auto",
+        });
+      }
+    };
+
+    if (typeof window.requestAnimationFrame !== "function") {
+      const timeoutId = window.setTimeout(restore, 0);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    let secondFrame: number | null = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      restore();
+      secondFrame = window.requestAnimationFrame(restore);
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [detailOpen, items, selectedFeedItemId]);
+    const settleTimeout = window.setTimeout(restore, 48);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(settleTimeout);
+    };
+  }, [detailOpen, selectedFeedItemId]);
+
+  // The detail column is removed only after the close transition. Restore the
+  // page position from the post-removal layout, otherwise the browser can keep
+  // the temporary split-view scroll clamp and leave the feed one viewport too
+  // low after the column disappears.
+  useLayoutEffect(() => {
+    if (detailOpen) return;
+    const anchor = selectionAnchorRef.current;
+    if (!anchor) return;
+
+    const restore = () => {
+      safeWindowScrollTo({ top: anchor.pageScrollTop, behavior: "auto" });
+      const feed = feedColumnRef.current;
+      if (feed && feed.scrollHeight > feed.clientHeight + 1) {
+        feed.scrollTop = anchor.feedScrollTop;
+      }
+      focusSelectionTarget(selectionFocusTargetRef.current, anchor.itemId);
+    };
+
+    if (typeof window.requestAnimationFrame !== "function") {
+      const timeoutId = window.setTimeout(() => {
+        restore();
+        selectionAnchorRef.current = null;
+        selectionFocusTargetRef.current = null;
+        savedPageScrollTopRef.current = null;
+      }, 0);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    let secondFrame: number | null = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      restore();
+      secondFrame = window.requestAnimationFrame(restore);
+    });
+    const settleTimeout = window.setTimeout(() => {
+      restore();
+      selectionAnchorRef.current = null;
+      selectionFocusTargetRef.current = null;
+      savedPageScrollTopRef.current = null;
+    }, 80);
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(settleTimeout);
+    };
+  }, [detailOpen]);
 
   const activeFeedTrace = useMemo(() => {
     const activeItem = items.find((item) => item.id === activeSpyItemId);
@@ -475,20 +765,12 @@ export function ExplorePage() {
           const closestId = closestEntry?.target.getAttribute("data-discovery-item-id");
           if (!closestId) return;
 
-          setActiveSpyItemId(closestId);
+          // Once detail is open, the selected card is the stable master
+          // reference. Letting scroll-spy replace it while the user reads the
+          // detail panel makes the left column appear to jump or remount.
+          if (detailOpen) return;
 
-          if (detailOpen) {
-            const focusedItem = items.find((item) => item.id === closestId);
-            if (focusedItem?.itemType === "TRACE" && selectedTrace?.id !== focusedItem.id) {
-              const next = new URLSearchParams(searchParams);
-              next.set("selected", focusedItem.slug);
-              setSearchParams(next, { replace: true, preventScrollReset: true });
-            } else if (focusedItem?.itemType === "POST" && selectedPost?.id !== focusedItem.id) {
-              const next = new URLSearchParams(searchParams);
-              next.set("selected", focusedItem.id);
-              setSearchParams(next, { replace: true, preventScrollReset: true });
-            }
-          }
+          setActiveSpyItemId(closestId);
 
         }, 120);
       },
@@ -504,16 +786,17 @@ export function ExplorePage() {
         scrollSpyTimerRef.current = null;
       }
     };
-  }, [detailOpen, items, searchParams, selectedPost?.id, selectedTrace?.id, setSearchParams]);
+  }, [detailOpen, items]);
 
   const [isClosingDetail, setIsClosingDetail] = useState(false);
   const [closingDetailTrace, setClosingDetailTrace] = useState<DiscoveryTrace | null>(null);
   const [closingSelectedPost, setClosingSelectedPost] = useState<DiscoveryPost | null>(null);
+  const [closingSelectedPlace, setClosingSelectedPlace] = useState<DiscoveryPlace | null>(null);
   const closingTimeoutRef = useRef<number | null>(null);
 
-  const isDetailActive = Boolean(detailOpen && !isClosingDetail);
   const activeDetailTrace = detailTrace || closingDetailTrace;
   const activeSelectedPost = selectedPost || closingSelectedPost;
+  const activeSelectedPlace = selectedPlace || closingSelectedPlace;
 
   useEffect(() => {
     return () => {
@@ -524,7 +807,31 @@ export function ExplorePage() {
     };
   }, []);
 
+  useLayoutEffect(() => {
+    setExploreDetailViewportState(detailOpen || isClosingDetail);
+
+    return () => setExploreDetailViewportState(false);
+  }, [detailOpen, isClosingDetail]);
+
+  const captureSelectionAnchor = (itemId: string) => {
+    const pageScrollTop = getDocumentScrollTop();
+    const card = findDiscoveryCard(itemId);
+    const feed = feedColumnRef.current;
+    const activeElement = document.activeElement;
+    savedPageScrollTopRef.current = pageScrollTop;
+    selectionFocusTargetRef.current = activeElement instanceof HTMLElement && card?.contains(activeElement)
+      ? activeElement
+      : card?.querySelector<HTMLElement>("button, a, [tabindex]:not([tabindex='-1'])") ?? null;
+    selectionAnchorRef.current = {
+      itemId,
+      pageScrollTop,
+      feedScrollTop: feed?.scrollTop ?? 0,
+      cardTop: card?.getBoundingClientRect().top ?? null,
+    };
+  };
+
   const selectTrace = (trace: DiscoveryTrace) => {
+    captureSelectionAnchor(trace.id);
     if (closingTimeoutRef.current !== null) {
       window.clearTimeout(closingTimeoutRef.current);
       closingTimeoutRef.current = null;
@@ -532,6 +839,7 @@ export function ExplorePage() {
     setIsClosingDetail(false);
     setClosingDetailTrace(null);
     setClosingSelectedPost(null);
+    setClosingSelectedPlace(null);
     setActiveSpyItemId(trace.id);
     setCommentFocusRequest(null);
     setMediaModalOpen(false);
@@ -540,9 +848,29 @@ export function ExplorePage() {
   };
   const closeTrace = () => {
     setMediaModalOpen(false);
-    if (detailTrace || selectedPost) {
+    const targetScroll = savedPageScrollTopRef.current;
+    const restorePagePosition = () => {
+      if (targetScroll === null) return;
+      const restore = () => safeWindowScrollTo({ top: targetScroll, behavior: "auto" });
+      if (typeof window.requestAnimationFrame !== "function") {
+        window.setTimeout(restore, 0);
+        return;
+      }
+      let secondFrame: number | null = null;
+      const firstFrame = window.requestAnimationFrame(() => {
+        restore();
+        secondFrame = window.requestAnimationFrame(restore);
+      });
+      window.setTimeout(() => {
+        window.cancelAnimationFrame(firstFrame);
+        if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+        restore();
+      }, 48);
+    };
+    if (detailTrace || selectedPost || selectedPlace) {
       setClosingDetailTrace(detailTrace);
       setClosingSelectedPost(selectedPost);
+      setClosingSelectedPlace(selectedPlace);
       setIsClosingDetail(true);
       if (closingTimeoutRef.current !== null) {
         window.clearTimeout(closingTimeoutRef.current);
@@ -551,13 +879,34 @@ export function ExplorePage() {
         setIsClosingDetail(false);
         setClosingDetailTrace(null);
         setClosingSelectedPost(null);
+        setClosingSelectedPlace(null);
         closingTimeoutRef.current = null;
         updateParams({ selected: null });
-      }, 200);
+      }, DETAIL_CLOSE_DURATION_MS);
     } else {
       updateParams({ selected: null });
+      restorePagePosition();
+      if (selectionAnchorRef.current) {
+        focusSelectionTarget(selectionFocusTargetRef.current, selectionAnchorRef.current.itemId);
+      }
+      selectionAnchorRef.current = null;
+      selectionFocusTargetRef.current = null;
     }
   };
+
+  useEffect(() => {
+    if (!detailOpen || mediaModalOpen || isClosingDetail) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeTrace();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [detailOpen, isClosingDetail, mediaModalOpen, selectedFeedItemId]);
+
   const openMedia = (index: number) => {
     setMediaModalIndex(Math.max(0, index));
     setMediaModalOpen(true);
@@ -565,6 +914,7 @@ export function ExplorePage() {
   const closeMedia = () => setMediaModalOpen(false);
 
   const handleOpenPostDetail = (post: DiscoveryPost) => {
+    captureSelectionAnchor(post.id);
     if (closingTimeoutRef.current !== null) {
       window.clearTimeout(closingTimeoutRef.current);
       closingTimeoutRef.current = null;
@@ -572,8 +922,8 @@ export function ExplorePage() {
     setIsClosingDetail(false);
     setClosingDetailTrace(null);
     setClosingSelectedPost(null);
+    setClosingSelectedPlace(null);
     setActiveSpyItemId(post.id);
-    setSelectedThread(null);
     setCommentFocusRequest(null);
     setMediaModalOpen(false);
     setMediaModalIndex(0);
@@ -581,25 +931,26 @@ export function ExplorePage() {
   };
 
   const handleComment = (item: DiscoveryItem) => {
+    captureSelectionAnchor(item.id);
+    if (closingTimeoutRef.current !== null) {
+      window.clearTimeout(closingTimeoutRef.current);
+      closingTimeoutRef.current = null;
+    }
+    setIsClosingDetail(false);
+    setClosingDetailTrace(null);
+    setClosingSelectedPost(null);
+    setClosingSelectedPlace(null);
+    setActiveSpyItemId(item.id);
+    setMediaModalOpen(false);
+    setCommentFocusRequest((current) => ({
+      itemId: item.id,
+      key: (current?.key ?? 0) + 1,
+    }));
     if (item.itemType === "TRACE") {
-      setActiveSpyItemId(item.id);
-      setSelectedThread(null);
       updateParams({ selected: item.slug });
-      setCommentFocusRequest((current) => ({
-        traceId: item.id,
-        key: (current?.key ?? 0) + 1,
-      }));
       return;
     }
-    if (item.itemType === "POST") {
-      setActiveSpyItemId(item.id);
-      setSelectedThread(null);
-      setCommentFocusRequest(null);
-      updateParams({ selected: item.id });
-      return;
-    }
-    updateParams({ selected: null });
-    setSelectedThread(item);
+    updateParams({ selected: item.id });
   };
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
@@ -646,6 +997,7 @@ export function ExplorePage() {
   const runAction = async (
     item: DiscoveryItem,
     action: DiscoveryAction,
+    hideReasonCode?: FeedFeedbackReasonCode,
   ): Promise<void> => {
     const key = actionKey(item, action);
     if (actionStates[key]?.pending) return;
@@ -695,7 +1047,16 @@ export function ExplorePage() {
       }
       return;
     }
-    if (customerDataMode === "live" && !sessionQuery.data) {
+    const supportsAnonymousEntityHide =
+      action === "hide" &&
+      (item.itemType === "TRACE" || item.itemType === "PLACE") &&
+      (customerDataMode === "demo" ||
+        (sessionQuery.isSuccess && !sessionQuery.data));
+    if (
+      customerDataMode === "live" &&
+      !sessionQuery.data &&
+      !supportsAnonymousEntityHide
+    ) {
       setActionStates((current) =>
         updateActionState(current, key, { pending: true, error: null }),
       );
@@ -736,7 +1097,31 @@ export function ExplorePage() {
             createIdempotencyKey(`explore-${action}`),
           );
         } else if (item.itemType === "PLACE" && action === "trace") {
-          if (item.saved) await removeCustomerFavorite(item.slug);
+          if (placeApiMode === "canonical") {
+            if (!item.canonicalPlaceId) {
+              throw new Error("canonical-place-reference-missing");
+            }
+            const savedState = await setCanonicalPlaceSaved(
+              item.canonicalPlaceId,
+              !item.saved,
+              createIdempotencyKey("explore-place-save"),
+            );
+            if (
+              savedState.placeId !== item.canonicalPlaceId ||
+              savedState.saved !== !item.saved
+            ) {
+              throw new Error("canonical-place-save-state-mismatch");
+            }
+            await queryClient.invalidateQueries({
+              queryKey: [
+                "feed",
+                "saved-places",
+                "explore",
+                sessionQuery.data?.user.id ?? null,
+              ],
+            });
+          }
+          else if (item.saved) await removeCustomerFavorite(item.slug);
           else await saveCustomerFavorite(item.slug);
         } else if (item.itemType === "TRACER" && action === "follow") {
           await setTraceDeeTracerFollow(
@@ -748,9 +1133,26 @@ export function ExplorePage() {
           (item.itemType === "TRACE" || item.itemType === "PLACE") &&
           action === "hide"
         ) {
-          // Core Feed v1 intentionally has no client-authored dismissal event.
-          // Keep this test-stage hide session-local until the server contract
-          // exposes an explicit preference mutation.
+          if (feedbackPersistence === "core") {
+            if (!item.feedSessionId || !item.trackingToken) {
+              throw new Error("feed-feedback-context-missing");
+            }
+            const feedback = await postCoreFeedFeedback({
+              schemaVersion: "1",
+              feedSessionId: item.feedSessionId,
+              itemToken: item.trackingToken,
+              action: "hide",
+              ...(hideReasonCode ? { reasonCode: hideReasonCode } : {}),
+            });
+            if (
+              feedback.itemType !== item.itemType ||
+              feedback.itemId !== item.id ||
+              feedback.active !== true
+            ) {
+              throw new Error("feed-feedback-state-mismatch");
+            }
+            if (feedbackHistoryOpen) void feedbackHistoryQuery.refetch();
+          }
         } else {
           throw new Error("unsupported-explore-action");
         }
@@ -825,8 +1227,12 @@ export function ExplorePage() {
           });
         }
       }
-      if (action === "hide")
+      if (action === "hide") {
         setHiddenIds((current) => new Set(current).add(item.id));
+        setHiddenItem(item);
+        setHiddenFeedbackPersistence(feedbackPersistence);
+        setPendingHideItem(null);
+      }
       if (action === "trace" && (item.itemType === "TRACE" || item.itemType === "PLACE")) {
         notify(item.saved ? "นำออกจาก Saved แล้ว" : "บันทึกไว้ใน Saved แล้ว");
       }
@@ -835,18 +1241,89 @@ export function ExplorePage() {
         notify(active ? "ยกเลิกการติดตามแล้ว" : "ติดตามแล้ว");
       }
       if (action === "like") notify(item.itemType === "POST" && item.liked ? "ยกเลิกถูกใจแล้ว" : "ถูกใจแล้ว");
-      if (action === "hide") notify("ซ่อนรายการนี้แล้ว");
+      if (action === "hide") {
+        notify(
+          feedbackPersistence === "core"
+            ? "ซ่อนรายการนี้แล้ว"
+            : "ซ่อนรายการนี้แล้วในเซสชันนี้",
+        );
+      }
       setActionStates((current) =>
         updateActionState(current, key, { pending: false, error: null }),
       );
-    } catch {
-      notify("ยังทำรายการไม่สำเร็จ ลองใหม่ได้");
+    } catch (error) {
+      const message = error instanceof Error && error.message === "canonical-place-reference-missing"
+        ? "รายการนี้ยังไม่มี canonical Place ID จึงบันทึกไม่ได้"
+        : error instanceof Error && error.message === "canonical-place-save-state-mismatch"
+          ? "สถานะการบันทึก Place ไม่ตรงกับ Core ลองใหม่ได้"
+        : error instanceof Error && error.message === "feed-feedback-context-missing"
+          ? "รายการนี้ไม่มีบริบท Feed ที่ใช้ซ่อนแบบถาวร ลองโหลดฟีดใหม่"
+          : error instanceof Error && error.message === "feed-feedback-state-mismatch"
+            ? "สถานะการซ่อนรายการไม่ตรงกับ Core ลองใหม่ได้"
+        : "ยังทำรายการไม่สำเร็จ ลองใหม่ได้";
+      notify(message);
       setActionStates((current) =>
         updateActionState(current, key, {
           pending: false,
-          error: "ยังทำรายการไม่สำเร็จ ลองใหม่ได้",
+          error: message,
         }),
       );
+    }
+  };
+
+  const restoreHiddenItem = async (): Promise<void> => {
+    if (!hiddenItem || restorePending) return;
+    setRestorePending(true);
+    try {
+      const persistence = hiddenFeedbackPersistence ?? feedbackPersistence;
+      if (persistence === "core") {
+        if (!sessionQuery.data) {
+          throw new Error("feed-feedback-auth-required");
+        }
+        if (
+          (hiddenItem.itemType !== "TRACE" && hiddenItem.itemType !== "PLACE") ||
+          !hiddenItem.feedSessionId ||
+          !hiddenItem.trackingToken
+        ) {
+          throw new Error("feed-feedback-context-missing");
+        }
+        const feedback = await postCoreFeedFeedback({
+          schemaVersion: "1",
+          feedSessionId: hiddenItem.feedSessionId,
+          itemToken: hiddenItem.trackingToken,
+          action: "unhide",
+        });
+        if (
+          feedback.itemType !== hiddenItem.itemType ||
+          feedback.itemId !== hiddenItem.id ||
+          feedback.active !== false
+        ) {
+          throw new Error("feed-feedback-state-mismatch");
+        }
+        void liveFeedQuery.refetch();
+        if (feedbackHistoryOpen) void feedbackHistoryQuery.refetch();
+      } else {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 180));
+      }
+      setHiddenIds((current) => {
+        const next = new Set(current);
+        next.delete(hiddenItem.id);
+        return next;
+      });
+      setHiddenItem(null);
+      setHiddenFeedbackPersistence(null);
+      notify("นำรายการกลับมาแล้ว");
+    } catch (error) {
+      const message = error instanceof Error && error.message === "feed-feedback-context-missing"
+        ? "รายการนี้ไม่มีบริบท Feed สำหรับเลิกซ่อน ลองโหลดฟีดใหม่"
+        : error instanceof Error && error.message === "feed-feedback-state-mismatch"
+          ? "สถานะเลิกซ่อนไม่ตรงกับ Core ลองใหม่ได้"
+          : error instanceof Error && error.message === "feed-feedback-auth-required"
+            ? "เข้าสู่ระบบก่อนเลิกซ่อนรายการนี้ เพื่อแก้สถานะใน Core"
+          : "ยังเลิกซ่อนรายการไม่ได้ ลองใหม่ได้";
+      notify(message);
+    } finally {
+      setRestorePending(false);
     }
   };
 
@@ -988,22 +1465,26 @@ export function ExplorePage() {
   ): DiscoveryActionState | undefined => actionStates[actionKey(item, action)];
   const handlers = {
     onAction: (item: DiscoveryItem, action: DiscoveryAction) => {
+      if (action === "hide") {
+        setPendingHideItem(item);
+        return;
+      }
       void runAction(item, action);
     },
     onComment: handleComment,
     onOpenPostDetail: handleOpenPostDetail,
     onInlineCommentSubmit: customerDataMode === "demo"
-      ? async () => {
+      ? async (_item: DiscoveryItem, _body: string, _parentId?: string) => {
           await new Promise<void>((resolve) => window.setTimeout(resolve, 260));
         }
       : undefined,
     onCommentEdit: customerDataMode === "demo"
-      ? async () => {
+      ? async (_item: DiscoveryItem, _commentId: string, _body: string) => {
           await new Promise<void>((resolve) => window.setTimeout(resolve, 180));
         }
       : undefined,
     onCommentDelete: customerDataMode === "demo"
-      ? async () => {
+      ? async (_item: DiscoveryItem, _commentId: string) => {
           await new Promise<void>((resolve) => window.setTimeout(resolve, 180));
         }
       : undefined,
@@ -1014,6 +1495,9 @@ export function ExplorePage() {
         }
       : undefined,
     onSelectTrace: selectTrace,
+    onStartTrace: (trace: DiscoveryTrace) => {
+      navigate(`/map?mode=traces&trace=${encodeURIComponent(trace.slug)}`);
+    },
     selectedTraceId: selectedTrace?.id ?? null,
     activeSpyItemId,
     onCreatorFollow: customerDataMode === "demo"
@@ -1042,7 +1526,7 @@ export function ExplorePage() {
       }
     },
     onHide: (item: DiscoveryItem) => {
-      void runAction(item, "hide");
+      setPendingHideItem(item);
     },
   };
   const isLoading =
@@ -1097,7 +1581,7 @@ export function ExplorePage() {
       <div className="discovery-status-stack">
         {gatewayOffline && items.length > 0 && (
           <div className="stale-data-notice" role="status">
-            Customer Gateway ยังไม่พร้อม · กำลังแสดงข้อมูลตัวอย่างในเครื่อง
+            การเชื่อมต่อข้อมูลจริงยังไม่พร้อม · กำลังแสดงข้อมูลตัวอย่างในเครื่อง
             <button
               className="text-link text-link--button"
               type="button"
@@ -1121,8 +1605,118 @@ export function ExplorePage() {
             ไม่ใช่สถานะจริงของร้านหรือ availability
           </div>
         )}
+        {pendingHideItem && (
+          <div className="stale-data-notice" role="dialog" aria-label="เลือกเหตุผลที่ซ่อนรายการ">
+            <span>
+              ทำไมจึงไม่อยากเห็น {pendingHideItem.itemType === "TRACE" ? pendingHideItem.title : pendingHideItem.itemType === "PLACE" ? pendingHideItem.name : "รายการนี้"}?
+            </span>
+            <div className="button-row">
+              {hideReasonOptions.map((option) => (
+                <button
+                  key={option.code}
+                  className="text-link text-link--button"
+                  type="button"
+                  disabled={actionStates[actionKey(pendingHideItem, "hide")]?.pending === true}
+                  onClick={() => void runAction(pendingHideItem, "hide", option.code)}
+                >
+                  {option.label}
+                </button>
+              ))}
+              <button
+                className="text-link text-link--button"
+                type="button"
+                disabled={actionStates[actionKey(pendingHideItem, "hide")]?.pending === true}
+                onClick={() => void runAction(pendingHideItem, "hide")}
+              >
+                ไม่ระบุเหตุผล
+              </button>
+              <button
+                className="text-link text-link--button"
+                type="button"
+                disabled={actionStates[actionKey(pendingHideItem, "hide")]?.pending === true}
+                onClick={() => setPendingHideItem(null)}
+              >
+                ยกเลิก
+              </button>
+            </div>
+          </div>
+        )}
+        {hiddenItem && (
+          <div className="stale-data-notice" role="status">
+            ซ่อน {hiddenItem.itemType === "TRACE" ? hiddenItem.title : hiddenItem.itemType === "PLACE" ? hiddenItem.name : "รายการนี้"} แล้ว
+            <button
+              className="text-link text-link--button"
+              type="button"
+              disabled={restorePending}
+              onClick={() => void restoreHiddenItem()}
+            >
+              {restorePending ? "กำลังเลิกซ่อน…" : "เลิกซ่อน"}
+            </button>
+          </div>
+        )}
+        {customerDataMode === "live" && sessionQuery.data && (
+          <div className="stale-data-notice" role="region" aria-label="ประวัติการซ่อนรายการ">
+            <button
+              className="text-link text-link--button"
+              type="button"
+              aria-expanded={feedbackHistoryOpen}
+              onClick={() => setFeedbackHistoryOpen((current) => !current)}
+            >
+              {feedbackHistoryOpen ? "ซ่อนประวัติการซ่อน" : "ดูประวัติการซ่อน"}
+            </button>
+            {feedbackHistoryOpen && (
+              <div className="button-row" aria-busy={feedbackHistoryQuery.isLoading}>
+                {feedbackHistoryQuery.isLoading && <span>กำลังโหลดประวัติ…</span>}
+                {feedbackHistoryQuery.isError && (
+                  <span>
+                    โหลดประวัติไม่สำเร็จ
+                    <button
+                      className="text-link text-link--button"
+                      type="button"
+                      onClick={() => void feedbackHistoryQuery.refetch()}
+                    >
+                      ลองใหม่
+                    </button>
+                  </span>
+                )}
+                {feedbackHistoryQuery.data && feedbackHistoryQuery.data.entries.length === 0 && (
+                  <span>ยังไม่มีประวัติการซ่อน</span>
+                )}
+                {feedbackHistoryQuery.data && feedbackHistoryQuery.data.entries.length > 0 && (
+                  <ol aria-label="รายการประวัติการซ่อน">
+                    {feedbackHistoryQuery.data.entries.map((entry, index) => {
+                      const item = baseItems.find(
+                        (candidate) =>
+                          candidate.itemType === entry.itemType &&
+                          candidate.id === entry.itemId,
+                      );
+                      const label = item
+                        ? item.itemType === "TRACE"
+                          ? item.title
+                          : item.itemType === "PLACE"
+                            ? item.name
+                            : `${entry.itemType} · ${entry.itemId}`
+                        : `${entry.itemType} · ${entry.itemId}`;
+                      const reason = entry.reasonCode
+                        ? hideReasonLabels[entry.reasonCode]
+                        : "ไม่ระบุเหตุผล";
+                      return (
+                        <li key={`${entry.itemType}:${entry.itemId}:${entry.createdAt}:${index}`}>
+                          <span>{label}</span>
+                          <span className="muted-label">
+                            {entry.active ? "ซ่อนอยู่" : "เลิกซ่อนแล้ว"} · {reason} · {new Date(entry.createdAt).toLocaleString("th-TH")}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
-      <div className={`explore-discovery-shell${isDetailActive ? " has-detail" : ""}`}>
+      <div className={`explore-discovery-shell${detailOpen || isClosingDetail ? " has-detail" : ""}`}>
         <ExploreContextSidebar
           activeArea={area}
           activeVibe={vibe}
@@ -1130,7 +1724,7 @@ export function ExplorePage() {
           onAreaChange={(value) => updateParams({ area: value })}
           onVibeChange={(value) => updateParams({ vibe: value })}
         />
-        <div className={`discovery-workspace-layout${isDetailActive ? " has-detail" : ""}`}>
+        <div className={`discovery-workspace-layout${detailOpen || isClosingDetail ? " has-detail" : ""}`}>
           <main ref={feedColumnRef} className="discovery-feed-column" aria-label="Explore feed">
             <div className="discovery-feed-heading">
               <div>
@@ -1151,11 +1745,28 @@ export function ExplorePage() {
               </div>
               <span className="muted-label">{items.length} รายการ</span>
             </div>
-            <DiscoveryComposer
-              demoMode={customerDataMode === "demo"}
-              onNotify={notify}
-              onPublish={publishComposerDraft}
-            />
+            {customerDataMode === "demo" ? (
+              <DiscoveryComposer
+                demoMode
+                onNotify={notify}
+                onPublish={publishComposerDraft}
+              />
+            ) : (
+              <DiscoveryIntentPrompt
+                area={area}
+                vibe={vibe}
+                category={activePortalCategory}
+                date={bookingDate}
+                partySize={partySize}
+                onClear={() => updateParams({
+                  area: null,
+                  vibe: null,
+                  category: null,
+                  date: null,
+                  party: null,
+                })}
+              />
+            )}
             {hasError && items.length > 0 && (
               <InlineRecovery
                 onRetry={() => {
@@ -1190,14 +1801,21 @@ export function ExplorePage() {
                 </button>
               </section>
             ) : (
-              <div className="discovery-feed">
-                {items.map((item) => (
-                  <DiscoveryCard
-                    key={`${item.itemType}-${item.id}`}
-                    item={item}
-                    handlers={handlers}
-                  />
-                ))}
+              <>
+                {discoveryModules.length > 0 && (
+                  <DiscoveryModuleShelf modules={discoveryModules} handlers={handlers} />
+                )}
+                <div className="discovery-feed">
+                  {items
+                    .filter((item) => !moduleItemKeys.has(`${item.itemType}:${item.id}`))
+                    .map((item) => (
+                      <DiscoveryCard
+                        key={`${item.itemType}-${item.id}`}
+                        item={item}
+                        handlers={handlers}
+                      />
+                    ))}
+                </div>
                 {customerDataMode === "live" && liveFeedQuery.hasNextPage && (
                   <button
                     className="button button--ghost load-more-button"
@@ -1210,10 +1828,10 @@ export function ExplorePage() {
                       : "ดูเพิ่มเติม"}
                   </button>
                 )}
-              </div>
+              </>
             )}
           </main>
-          {(detailOpen || isClosingDetail) && (activeDetailTrace || activeSelectedPost) && (
+          {(detailOpen || isClosingDetail || Boolean(searchParams.get("selected"))) && (
             <aside className={`discovery-detail-column${isClosingDetail ? " is-closing" : ""}`} aria-label="รายละเอียดที่เลือก">
               {activeDetailTrace ? (
                 <ExploreTraceDetail
@@ -1226,7 +1844,7 @@ export function ExplorePage() {
                   onFollowCreator={customerDataMode === "demo" ? () => void runCreatorFollow(activeDetailTrace.creator) : undefined}
                   onStartJourney={() => navigate(`/map?mode=traces&trace=${encodeURIComponent(activeDetailTrace.slug)}`)}
                   onSaveStop={customerDataMode === "demo" ? () => notify("เซฟจุดแวะไว้แล้ว") : undefined}
-                  commentFocusRequestKey={commentFocusRequest?.traceId === activeDetailTrace.id ? commentFocusRequest.key : 0}
+                  commentFocusRequestKey={commentFocusRequest?.itemId === activeDetailTrace.id ? commentFocusRequest.key : 0}
                   onCommentSubmit={customerDataMode === "demo" ? async () => {
                     await new Promise<void>((resolve) => window.setTimeout(resolve, 260));
                   } : undefined}
@@ -1249,6 +1867,7 @@ export function ExplorePage() {
                   onOpenMedia={openMedia}
                   onLike={() => void runAction(activeSelectedPost, "like")}
                   onShare={() => void runAction(activeSelectedPost, "share")}
+                  commentFocusRequestKey={commentFocusRequest?.itemId === activeSelectedPost.id ? commentFocusRequest.key : 0}
                   onCommentSubmit={customerDataMode === "demo" ? async () => {
                     await new Promise<void>((resolve) => window.setTimeout(resolve, 260));
                   } : undefined}
@@ -1260,7 +1879,28 @@ export function ExplorePage() {
                   } : undefined}
                   onFollowCommenter={handlers.onFollowCommenter}
                 />
-              ) : <ExploreDetailEmpty />}
+              ) : activeSelectedPlace ? (
+                <PlaceInlineDetail
+                  place={activeSelectedPlace}
+                  demoMode={customerDataMode === "demo"}
+                  saved={activeSelectedPlace.saved}
+                  onSave={customerDataMode === "demo" ? () => void runAction(activeSelectedPlace, "trace") : undefined}
+                  onClose={closeTrace}
+                  commentFocusRequestKey={commentFocusRequest?.itemId === activeSelectedPlace.id ? commentFocusRequest.key : 0}
+                  onCommentSubmit={customerDataMode === "demo" ? async (body, parentId) => {
+                    await handlers.onInlineCommentSubmit?.(activeSelectedPlace, body, parentId);
+                  } : undefined}
+                  onCommentEdit={customerDataMode === "demo" ? async (commentId, body) => {
+                    await handlers.onCommentEdit?.(activeSelectedPlace, commentId, body);
+                  } : undefined}
+                  onCommentDelete={customerDataMode === "demo" ? async (commentId) => {
+                    await handlers.onCommentDelete?.(activeSelectedPlace, commentId);
+                  } : undefined}
+                  onFollowCommenter={handlers.onFollowCommenter}
+                />
+              ) : (
+                <ExploreDetailEmpty onClose={closeTrace} />
+              )}
             </aside>
           )}
         </div>
@@ -1279,7 +1919,7 @@ export function ExplorePage() {
         trace={modalTrace}
         post={modalPost}
         demoMode={customerDataMode === "demo"}
-        autoFocusComposer={Boolean(commentFocusRequest && modalTrace && commentFocusRequest.traceId === modalTrace.id)}
+        autoFocusComposer={Boolean(commentFocusRequest && modalTrace && commentFocusRequest.itemId === modalTrace.id)}
         creatorFollowing={modalCreator ? creatorIsFollowed(modalCreator) : false}
         creatorFollowPending={modalCreator ? actionStates[creatorActionKey(modalCreator)]?.pending === true : false}
         onFollowCreator={modalCreator && customerDataMode === "demo" ? () => void runCreatorFollow(modalCreator) : undefined}
@@ -1310,44 +1950,6 @@ export function ExplorePage() {
         <span>{toast}</span>
         <button className="explore-toast__close" type="button" aria-label="ปิดข้อความ" onClick={() => setToast("")}><X size={15} aria-hidden="true" /></button>
       </div>}
-      {selectedThread && (
-        <CommentThread
-          key={selectedThread.id}
-          title={
-            selectedThread.itemType === "TRACE"
-              ? selectedThread.title
-              : selectedThread.itemType === "PLACE"
-                ? selectedThread.name
-                : selectedThread.itemType === "POST"
-                  ? selectedThread.author.name
-                  : selectedThread.tracer.name
-          }
-          comments={itemComments(selectedThread)}
-          onClose={() => setSelectedThread(null)}
-          autoFocus
-          preview={selectedThread.itemType === "POST" ? {
-            authorName: selectedThread.author.name,
-            authorInitials: selectedThread.author.initials,
-            publishedLabel: selectedThread.publishedLabel,
-            body: selectedThread.body,
-            media: (selectedThread.mediaImages?.length ? selectedThread.mediaImages : selectedThread.mediaLabels).map((source, index) => ({
-              src: selectedThread.mediaImages?.length ? source : undefined,
-              alt: `โพสต์ของ ${selectedThread.author.name} รูปที่ ${index + 1}`,
-              fallback: selectedThread.mediaLabels[index] ?? "ไม่มีสื่อที่แนบ",
-            })),
-          } : undefined}
-          onSubmit={
-            customerDataMode === "demo"
-              ? async () => {
-                  await new Promise<void>((resolve) =>
-                    window.setTimeout(resolve, 260),
-                  );
-                }
-              : undefined
-          }
-          onFollowCommenter={handlers.onFollowCommenter}
-        />
-      )}
     </div>
   );
 }

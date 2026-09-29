@@ -27,6 +27,7 @@ import {
 import { Link } from "react-router-dom";
 import { CommentStream } from "@/components/comment-stream";
 import type { PhotoLightboxItem } from "@/components/photo-lightbox";
+import { placeApiMode } from "@/lib/env";
 import {
   discoveryReasonCopy,
   type DiscoveryAction,
@@ -40,6 +41,20 @@ import {
   type DiscoveryTracer,
   type DiscoveryTracerSummary,
 } from "./types";
+
+function placeDetailHref(item: DiscoveryPlace): string {
+  if (placeApiMode === "canonical" && item.canonicalPlaceId) {
+    return `/places/${encodeURIComponent(item.canonicalPlaceId)}`;
+  }
+  return placeApiMode === "canonical"
+    ? `/map?mode=places&q=${encodeURIComponent(item.name)}`
+    : `/stores/${encodeURIComponent(item.slug)}`;
+}
+
+function placeMapHref(item: DiscoveryPlace): string {
+  const selection = placeApiMode === "canonical" ? item.canonicalPlaceId ?? item.slug : item.slug;
+  return `/map?mode=places&selected=${encodeURIComponent(selection)}`;
+}
 
 export interface DiscoveryActionHandlers {
   onAction?: (item: DiscoveryItem, action: DiscoveryAction) => void;
@@ -58,6 +73,7 @@ export interface DiscoveryActionHandlers {
   onCommentDelete?: (item: DiscoveryItem, commentId: string) => Promise<void>;
   onFollowCommenter?: (profile: DiscoveryCommentProfile) => Promise<void>;
   onSelectTrace?: (item: DiscoveryTrace) => void;
+  onStartTrace?: (item: DiscoveryTrace) => void;
   selectedTraceId?: string | null;
   activeSpyItemId?: string | null;
   onCreatorFollow?: (profile: DiscoveryTracerSummary) => void;
@@ -445,6 +461,12 @@ export function TraceCard({
         </div>
       </div>
       <div className="discovery-card__body">
+        <PhotoGrid
+          labels={item.coverTiles}
+          images={item.coverImages}
+          title={item.title}
+          onOpenDetail={handlers.onSelectTrace ? () => handlers.onSelectTrace?.(item) : undefined}
+        />
         <div className="discovery-card__title-row">
           <h2>
             <button
@@ -467,12 +489,6 @@ export function TraceCard({
         </div>
         <p className="discovery-card__description">{item.description}</p>
         <PresentationDetails item={item} />
-        <PhotoGrid
-          labels={item.coverTiles}
-          images={item.coverImages}
-          title={item.title}
-          onOpenDetail={handlers.onSelectTrace ? () => handlers.onSelectTrace?.(item) : undefined}
-        />
         <div className="discovery-card__metrics" aria-label="รายละเอียด Trace">
           <span>
             <Route size={14} aria-hidden="true" />
@@ -560,15 +576,20 @@ export function TraceCard({
               icon={<Share2 size={18} aria-hidden="true" />}
             />
           </div>
-          {handlers.onSelectTrace && (
+          {(handlers.onSelectTrace || handlers.onStartTrace) && (
             <button
               className="discovery-action-detail-pill"
               type="button"
-              aria-pressed={selected}
-              onClick={() => handlers.onSelectTrace?.(item)}
-              aria-label="ดูรายละเอียด Trace"
+              onClick={() => {
+                if (handlers.onStartTrace) {
+                  handlers.onStartTrace(item);
+                } else {
+                  handlers.onSelectTrace?.(item);
+                }
+              }}
+              aria-label="เริ่มเดินตาม Trace"
             >
-              <span>รายละเอียด</span>
+              <span>เริ่มเดินตาม Trace</span>
               <ArrowRight size={14} aria-hidden="true" />
             </button>
           )}
@@ -600,6 +621,8 @@ export function PlaceCard({
   handlers: DiscoveryActionHandlers;
 }) {
   const selected = handlers.activeSpyItemId === item.id;
+  const canBook = item.isAevoPlayPartner === true &&
+    (placeApiMode !== "canonical" || Boolean(item.venueSlug));
   return (
     <article
       className={`discovery-card discovery-card--place${selected ? " is-selected is-active-spy" : ""}`}
@@ -615,7 +638,7 @@ export function PlaceCard({
           <div>
             <h2>
               <Link
-                to={`/stores/${item.slug}`}
+                to={placeDetailHref(item)}
                 onClick={() => handlers.onOpen?.(item)}
               >
                 {item.name}
@@ -639,13 +662,13 @@ export function PlaceCard({
         <p className="discovery-place-graph">
           อยู่ใน {item.traceCount} Traces ที่คุณน่าจะชอบ
         </p>
-        {item.isAevoPlayPartner && (
+        {canBook && (
           <p className="discovery-place-partner">
             <Zap size={13} aria-hidden="true" />
             จองโต๊ะทันทีผ่าน Aevo Play
           </p>
         )}
-        <div className="discovery-card__actions">
+        <div className="discovery-card__action-bar discovery-card__action-bar--place" role="toolbar" aria-label="การดำเนินการสถานที่">
           <ActionButton
             action="trace"
             label={item.saved ? "บันทึกแล้ว" : "Trace It"}
@@ -662,21 +685,22 @@ export function PlaceCard({
             variant="primary"
           />
           <Link
-            className="discovery-action discovery-action--ghost"
-            to={`/map?mode=places&selected=${encodeURIComponent(item.slug)}`}
+            className="discovery-icon-action"
+            to={placeMapHref(item)}
+            aria-label="ดูสถานที่บนแผนที่"
           >
-            <MapPin size={15} aria-hidden="true" />
-            ดูบนแผนที่
+            <MapPin size={18} aria-hidden="true" />
           </Link>
-          <Link className="discovery-action discovery-action--ghost" to={`/create?type=trace&place=${encodeURIComponent(item.slug)}`}>
-            <Plus size={15} aria-hidden="true" />เพิ่มใน Trace
+          <Link className="discovery-icon-action" to={`/create?type=trace&place=${encodeURIComponent(item.slug)}`} aria-label="เพิ่มสถานที่นี้ใน Trace">
+            <Plus size={18} aria-hidden="true" />
           </Link>
-          {item.isAevoPlayPartner && (
+          {canBook && (
             <Link
-              className="discovery-action discovery-action--partner"
+              className="discovery-icon-action discovery-icon-action--partner"
               to={`/stores/${item.venueSlug ?? item.slug}/booking`}
+              aria-label="จองผ่าน Aevo Play"
             >
-              <Zap size={15} aria-hidden="true" />จองสิทธิ์
+              <Zap size={18} aria-hidden="true" />
             </Link>
           )}
           <IconActionButton
@@ -746,8 +770,6 @@ export function PostCard({
         </div>
       </div>
       <div className="discovery-card__body">
-        <p className="discovery-post__body">{item.body}</p>
-        <PresentationDetails item={item} />
         <PhotoGrid
           labels={item.mediaLabels}
           images={item.mediaImages}
@@ -760,6 +782,8 @@ export function PostCard({
             }
           }}
         />
+        <p className="discovery-post__body">{item.body}</p>
+        <PresentationDetails item={item} />
         {item.attachedObject && (
           <button
             className="discovery-attached-object"

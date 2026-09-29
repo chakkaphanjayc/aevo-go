@@ -19,7 +19,6 @@ import {
 
 const MapPage = lazy(() => import("@/features/map/map-page").then(({ MapPage: page }) => ({ default: page })));
 const CanonicalPlaceDetailPage = lazy(() => import("@/features/map/canonical-place-detail-page").then(({ CanonicalPlaceDetailPage: page }) => ({ default: page })));
-const TraceDeeFeedPage = lazy(() => import("@/features/tracedee/trace-dee-feed-page").then(({ TraceDeeFeedPage: page }) => ({ default: page })));
 const TraceDeeDetailPage = lazy(() => import("@/features/tracedee/trace-dee-detail-page").then(({ TraceDeeDetailPage: page }) => ({ default: page })));
 const CreatorProfilePage = lazy(() => import("@/features/profile/creator-profile-page").then(({ CreatorProfilePage: page }) => ({ default: page })));
 const GamificationHubPage = lazy(() => import("@/features/gamification/gamification-hub-page").then(({ GamificationHubPage: page }) => ({ default: page })));
@@ -51,7 +50,7 @@ export const router = createBrowserRouter([
       { path: "search", element: <SearchPage /> },
       { path: "map", element: <Suspense fallback={<MapRouteFallback />}><MapPage /></Suspense> },
       { path: "places/:placeId", element: <Suspense fallback={<MapRouteFallback />}><CanonicalPlaceDetailPage /></Suspense> },
-      { path: "traces", element: <Suspense fallback={<MapRouteFallback />}><TraceDeeFeedPage /></Suspense> },
+      { path: "traces", element: <Navigate to="/?tab=for_you&category=trace" replace /> },
       { path: "traces/:traceSlug", element: <Suspense fallback={<MapRouteFallback />}><TraceDeeDetailPage /></Suspense> },
       { path: "saved", element: <SavedPage /> },
       { path: "activity", element: <ActivityPage /> },

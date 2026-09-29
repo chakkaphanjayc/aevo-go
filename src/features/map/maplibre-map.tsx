@@ -15,6 +15,7 @@ import type {
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapBounds, StoreMapSummary, TraceMapSummary } from "./contracts";
 import {
+  isStoreSelection,
   toStoreFeatureCollection,
   toTraceFeatureCollection,
 } from "./contracts";
@@ -119,11 +120,12 @@ export function MapLibreMap({
   const hoveredFeatureRef = useRef<string | null>(null);
   const [status, setStatus] = useState<MapProviderStatus>("loading");
   const supported = isWebGlAvailable();
+  const selectedStoreSlug = stores.find((store) => isStoreSelection(store, selectedSlug))?.slug ?? selectedSlug;
   const data = useMemo(() => toStoreFeatureCollection(stores), [stores]);
   const traceData = useMemo(() => toTraceFeatureCollection(traces), [traces]);
   const selectedFilter = useMemo<["==", ["get", "slug"], string]>(
-    () => ["==", ["get", "slug"], selectedSlug ?? "__no_selected_store__"],
-    [selectedSlug],
+    () => ["==", ["get", "slug"], selectedStoreSlug ?? "__no_selected_store__"],
+    [selectedStoreSlug],
   );
   const hoveredFilter = useMemo<["==", ["get", "slug"], string]>(
     () => ["==", ["get", "slug"], hoveredSlug ?? "__no_hovered_item__"],
@@ -159,15 +161,15 @@ export function MapLibreMap({
   }, [focusBounds, supported]);
 
   useEffect(() => {
-    if (!mapReadyRef.current || !mapRef.current || !selectedSlug) return;
-    const selected = stores.find((store) => store.slug === selectedSlug);
+    if (!mapReadyRef.current || !mapRef.current || !selectedStoreSlug) return;
+    const selected = stores.find((store) => store.slug === selectedStoreSlug);
     if (!selected) return;
     programmaticMoveRef.current = true;
     mapRef.current.getMap().easeTo({
       center: [selected.point.longitude, selected.point.latitude],
       duration: 260,
     });
-  }, [selectedSlug, stores]);
+  }, [selectedStoreSlug, stores]);
 
   useEffect(() => {
     if (!mapReadyRef.current || !mapRef.current || !hoveredSlug) return;

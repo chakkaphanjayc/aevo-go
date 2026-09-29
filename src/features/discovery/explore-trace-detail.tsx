@@ -24,7 +24,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { CommentThread } from "@/components/comment-thread";
+import { CommentStream } from "@/components/comment-stream";
 import { InlineCommentSection } from "@/components/inline-comment-section";
 import {
   PhotoLightbox,
@@ -56,6 +56,8 @@ export interface ExploreDetailStop {
   commentCount?: number;
   isAevoPlayPartner?: boolean;
   bookingSlug?: string;
+  /** True only when the stop has an explicit, verified public booking target. */
+  bookingAvailable?: boolean;
 }
 
 interface ExploreTraceDetailProps {
@@ -74,6 +76,7 @@ interface ExploreTraceDetailProps {
   onCommentDelete?: (commentId: string) => Promise<void>;
   onFollowCommenter?: (profile: DiscoveryCommentProfile) => Promise<void>;
   onOpenMedia?: (index: number) => void;
+  onBookingUnavailable?: (stop: ExploreDetailStop) => void;
 }
 
 const demoStopsBySlug: Record<string, readonly Omit<ExploreDetailStop, "id" | "slug" | "area">[]> = {
@@ -122,6 +125,7 @@ function buildDemoStops(trace: DiscoveryTrace): ExploreDetailStop[] {
       commentCount: index === 0 ? trace.comments.length : 0,
       isAevoPlayPartner: stop.isAevoPlayPartner ?? false,
       bookingSlug: stop.id,
+      bookingAvailable: false,
     }));
   }
   const seeds = demoStopsBySlug[trace.slug] ?? [];
@@ -143,10 +147,11 @@ function buildDemoStops(trace: DiscoveryTrace): ExploreDetailStop[] {
     commentCount: index === 0 ? trace.comments.length : 0,
     isAevoPlayPartner: ["North Star Coffee", "Calm House Studio"].includes(stop.name),
     bookingSlug: stop.name.toLowerCase().replaceAll(" ", "-"),
+    bookingAvailable: false,
   }));
 }
 
-function DetailMediaViewer({ trace, demoMode, onOpenMedia }: { trace: DiscoveryTrace; demoMode: boolean; onOpenMedia?: (index: number) => void }) {
+function DetailMediaViewer({ trace, onOpenMedia }: { trace: DiscoveryTrace; onOpenMedia?: (index: number) => void }) {
   const mediaItems: PhotoLightboxItem[] = (trace.coverImages?.length ? trace.coverImages : [undefined]).map(
     (src, index) => ({
       src,
@@ -157,6 +162,7 @@ function DetailMediaViewer({ trace, demoMode, onOpenMedia }: { trace: DiscoveryT
   const [activeIndex, setActiveIndex] = useState(0);
   const [isZoomed, setIsZoomed] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(false);
   const activeItem = mediaItems[activeIndex] ?? mediaItems[0];
   const hasMultipleItems = mediaItems.length > 1;
 
@@ -164,10 +170,12 @@ function DetailMediaViewer({ trace, demoMode, onOpenMedia }: { trace: DiscoveryT
     setActiveIndex(0);
     setIsZoomed(false);
     setImageError(false);
+    setImageLoaded(false);
   }, [trace.id]);
 
   useEffect(() => {
     setImageError(false);
+    setImageLoaded(false);
   }, [activeIndex, activeItem.src]);
 
   const move = (direction: -1 | 1) => {
@@ -180,7 +188,7 @@ function DetailMediaViewer({ trace, demoMode, onOpenMedia }: { trace: DiscoveryT
 
   return (
     <div
-      className={`explore-detail-media-stage${isZoomed ? " is-zoomed" : ""}`}
+      className={`explore-detail-media-stage${isZoomed ? " is-zoomed" : ""}${imageLoaded ? " is-image-ready" : ""}`}
       aria-label={`ภาพประกอบ ${trace.title}`}
     >
       <div className="explore-detail-media-stage__backdrop" aria-hidden="true">
@@ -202,16 +210,13 @@ function DetailMediaViewer({ trace, demoMode, onOpenMedia }: { trace: DiscoveryT
             alt={activeItem.alt}
             loading="eager"
             decoding="async"
+            onLoad={() => setImageLoaded(true)}
             onError={() => setImageError(true)}
           />
         ) : (
           <span className="explore-detail-media-stage__fallback">{activeItem.fallback}</span>
         )}
       </button>
-      <div className="explore-detail-media-stage__overlay">
-        <span className="explore-detail-hero__badge"><ShieldCheck size={13} aria-hidden="true" />{demoMode ? "Verified route" : "Public trace"}</span>
-        <span className="explore-detail-hero__area"><MapPin size={13} aria-hidden="true" />{trace.area}</span>
-      </div>
       {activeItem.src && !imageError && (
         <button
           className="explore-detail-media-stage__zoom-toggle"
@@ -238,6 +243,55 @@ function DetailMediaViewer({ trace, demoMode, onOpenMedia }: { trace: DiscoveryT
   );
 }
 
+function DetailOverview({ trace }: { trace: DiscoveryTrace }) {
+  const duration = trace.durationMinutes === null
+    ? "—"
+    : trace.durationMinutes >= 60
+      ? `${Math.floor(trace.durationMinutes / 60)} ชม.${trace.durationMinutes % 60 ? ` ${trace.durationMinutes % 60} นาที` : ""}`
+      : `${trace.durationMinutes} นาที`;
+  const tags = Array.from(
+    new Set([
+      ...trace.topicTags,
+      ...(trace.presentation?.tags ?? []),
+    ].filter(Boolean)),
+  ).slice(0, 6);
+  const metrics = [
+    { icon: Route, value: String(trace.stopCount), label: "จุดแวะ" },
+    { icon: Clock3, value: duration, label: "เวลาโดยประมาณ" },
+    { icon: MapPin, value: trace.distanceKm === null ? "—" : `${trace.distanceKm} กม.`, label: "ระยะทาง" },
+    { icon: Star, value: trace.rating === null ? "—" : trace.rating.toFixed(1), label: "คะแนนจากชุมชน" },
+  ] as const;
+
+  return (
+    <section className="explore-detail-overview" aria-labelledby="explore-overview-title">
+      <div className="explore-detail-overview__heading">
+        <div>
+          <span className="eyebrow">AT A GLANCE</span>
+          <h3 id="explore-overview-title">ข้อมูลสำคัญของเส้นทาง</h3>
+        </div>
+        <span className="muted-label">
+          {trace.presentation?.visibility === "followers" ? "เฉพาะผู้ติดตาม" : "เปิดให้ติดตาม"}
+        </span>
+      </div>
+      <div className="explore-detail-overview__metrics">
+        {metrics.map(({ icon: Icon, value, label }) => (
+          <div className="explore-detail-overview__metric" key={label}>
+            <span aria-hidden="true"><Icon size={15} /></span>
+            <strong>{value}</strong>
+            <small>{label}</small>
+          </div>
+        ))}
+      </div>
+      {(tags.length > 0 || trace.presentation?.feeling) && (
+        <div className="explore-detail-overview__tags" aria-label="ลักษณะของ Trace">
+          {trace.presentation?.feeling && <span>{trace.presentation.feeling}</span>}
+          {tags.map((tag) => <span key={tag}>#{tag}</span>)}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function StopTimeline({
   stops,
   demoMode,
@@ -247,6 +301,8 @@ function StopTimeline({
   onCommentDelete,
   onFollowCommenter,
   onOpenMedia,
+  onClose,
+  onBookingUnavailable,
 }: {
   stops: readonly ExploreDetailStop[];
   demoMode: boolean;
@@ -256,14 +312,17 @@ function StopTimeline({
   onCommentDelete?: (commentId: string) => Promise<void>;
   onFollowCommenter?: (profile: DiscoveryCommentProfile) => Promise<void>;
   onOpenMedia?: (index: number) => void;
+  onClose?: () => void;
+  onBookingUnavailable?: (stop: ExploreDetailStop) => void;
 }) {
   if (!demoMode) {
     return (
       <div className="explore-detail-unavailable" role="status">
         <Route size={18} aria-hidden="true" />
         <div>
-          <strong>Stop timeline ยังไม่อยู่ใน public response</strong>
-          <p>เมื่อ Customer Gateway ส่ง stop projection พร้อมแล้ว รายละเอียดจะปรากฏตรงนี้โดยไม่ใช้ข้อมูลสมมติ</p>
+          <strong>รายละเอียดจุดแวะยังไม่พร้อม</strong>
+          <p>ข้อมูลกำลังอยู่ระหว่างการอัปเดต จึงยังไม่เปิดรายละเอียดจุดแวะจากข้อมูลที่ไม่ยืนยัน</p>
+          {onClose && <button className="text-link text-link--button" type="button" onClick={onClose}>ย้อนกลับ</button>}
         </div>
       </div>
     );
@@ -282,6 +341,7 @@ function StopTimeline({
           onCommentDelete={onCommentDelete}
           onFollowCommenter={onFollowCommenter}
           onOpenMedia={onOpenMedia}
+          onBookingUnavailable={onBookingUnavailable}
         />
       ))}
     </ol>
@@ -444,6 +504,7 @@ function StopStory({
   onCommentDelete,
   onFollowCommenter,
   onOpenMedia,
+  onBookingUnavailable,
 }: {
   stop: ExploreDetailStop;
   index: number;
@@ -453,19 +514,24 @@ function StopStory({
   onCommentDelete?: (commentId: string) => Promise<void>;
   onFollowCommenter?: (profile: DiscoveryCommentProfile) => Promise<void>;
   onOpenMedia?: (index: number) => void;
+  onBookingUnavailable?: (stop: ExploreDetailStop) => void;
 }) {
   const [liked, setLiked] = useState(stop.liked === true);
   const [likeCount, setLikeCount] = useState(stop.likeCount ?? 0);
   const [commentCount, setCommentCount] = useState(stop.commentCount ?? stop.comments?.length ?? 0);
   const [commentsOpen, setCommentsOpen] = useState(false);
+  const [bookingFallbackOpen, setBookingFallbackOpen] = useState(false);
   const comments = stop.comments ?? [];
-  const photoItems = stopPhotoItems(stop);
 
   useEffect(() => {
     setLiked(stop.liked === true);
     setLikeCount(stop.likeCount ?? 0);
     setCommentCount(stop.commentCount ?? stop.comments?.length ?? 0);
   }, [stop.id, stop.likeCount, stop.liked, stop.commentCount, stop.comments]);
+
+  useEffect(() => {
+    setBookingFallbackOpen(false);
+  }, [stop.id]);
 
   const submitComment = onCommentSubmit
     ? async (body: string) => {
@@ -502,43 +568,67 @@ function StopStory({
             }}
           >
             <Heart size={15} fill={liked ? "currentColor" : "none"} aria-hidden="true" />
-            <span>ถูกใจ</span><strong>{likeCount}</strong>
+            <span className="explore-stop-interaction__label">ถูกใจ</span><strong>{likeCount}</strong>
           </button>
-          <button className="explore-stop-interaction" type="button" onClick={() => setCommentsOpen(true)}>
+          <button className="explore-stop-interaction" type="button" aria-label={`เปิดความคิดเห็นของ ${stop.name}`} onClick={() => setCommentsOpen((current) => !current)}>
             <MessageCircle size={15} aria-hidden="true" />
-            <span>ความคิดเห็น</span><strong>{commentCount}</strong>
+            <span className="explore-stop-interaction__label">ความคิดเห็น</span><strong>{commentCount}</strong>
           </button>
-          <Link className="explore-stop-interaction" to={`/map?mode=places&q=${encodeURIComponent(stop.name)}`}>
-            <MapPin size={15} aria-hidden="true" /><span>ดูบน Map</span>
+          <Link className="explore-stop-interaction" to={`/map?mode=places&q=${encodeURIComponent(stop.name)}`} aria-label={`ดู ${stop.name} บน Map`}>
+            <MapPin size={15} aria-hidden="true" /><span className="explore-stop-interaction__label">ดูบน Map</span>
           </Link>
           {stop.isAevoPlayPartner && (
-            <Link className="explore-stop-interaction explore-stop-interaction--booking" to={`/stores/${encodeURIComponent(stop.bookingSlug ?? stop.slug)}/booking`}>
-              <Zap size={15} aria-hidden="true" /><span>จองผ่าน Aevo Play</span>
-            </Link>
+            stop.bookingAvailable && stop.bookingSlug ? (
+              <Link className="explore-stop-interaction explore-stop-interaction--booking" to={`/stores/${encodeURIComponent(stop.bookingSlug)}/booking`} aria-label={`จอง ${stop.name} ผ่าน Aevo Play`}>
+                <Zap size={15} aria-hidden="true" /><span className="explore-stop-interaction__label">จองผ่าน Aevo Play</span>
+              </Link>
+            ) : (
+              <button
+                className="explore-stop-interaction explore-stop-interaction--booking"
+                type="button"
+                aria-expanded={bookingFallbackOpen}
+                aria-label={`จอง ${stop.name} ผ่าน Aevo Play`}
+                onClick={() => {
+                  setBookingFallbackOpen(true);
+                  onBookingUnavailable?.(stop);
+                }}
+              >
+                <Zap size={15} aria-hidden="true" /><span className="explore-stop-interaction__label">จองผ่าน Aevo Play</span>
+              </button>
+            )
           )}
         </div>
         <p className="explore-stop__note">{stop.note}</p>
+        {bookingFallbackOpen && (
+          <div className="explore-stop-fallback" role="status">
+            <div>
+              <strong>ข้อมูลการจองยังไม่พร้อม</strong>
+              <p>ข้อมูลกำลังอยู่ระหว่างการอัปเดต และยังไม่เปิดลิงก์จองที่ยืนยันไม่ได้</p>
+            </div>
+            <button className="text-link text-link--button" type="button" onClick={() => setBookingFallbackOpen(false)}>ย้อนกลับ</button>
+          </div>
+        )}
         {onSaveStop ? (
-          <button className="explore-stop__save" type="button" onClick={() => onSaveStop(stop)}>
-            <Bookmark size={14} aria-hidden="true" />เซฟจุดนี้ไว้ในรายการ
+          <button className="explore-stop__save" type="button" aria-label={`เซฟ ${stop.name} ไว้ในรายการ`} onClick={() => onSaveStop(stop)}>
+            <Bookmark size={14} aria-hidden="true" /><span className="explore-stop__save-label">เซฟจุดนี้ไว้ในรายการ</span>
           </button>
         ) : (
-          <span className="explore-stop__save is-disabled"><Bookmark size={14} aria-hidden="true" />เซฟจุดนี้จะพร้อมเมื่อมี Place projection</span>
+          <span className="explore-stop__save is-disabled" aria-label="การเซฟจุดแวะยังไม่พร้อม"><Bookmark size={14} aria-hidden="true" /><span className="explore-stop__save-label">เซฟจุดนี้จะพร้อมเมื่อมีข้อมูลสถานที่</span></span>
+        )}
+        {commentsOpen && (
+          <section className="explore-stop__comments" aria-label={`ความคิดเห็นของ ${stop.name}`}>
+            <CommentStream
+              comments={comments}
+              showComposer={Boolean(submitComment)}
+              onSubmit={submitComment}
+              onEdit={onCommentEdit}
+              onDelete={onCommentDelete}
+              onFollowCommenter={onFollowCommenter}
+              onViewAll={() => undefined}
+            />
+          </section>
         )}
       </div>
-      {commentsOpen && (
-        <CommentThread
-          title={stop.name}
-          comments={comments}
-          media={photoItems}
-          onClose={() => setCommentsOpen(false)}
-          onSubmit={submitComment}
-          onEdit={onCommentEdit}
-          onDelete={onCommentDelete}
-          onFollowCommenter={onFollowCommenter}
-          autoFocus
-        />
-      )}
     </li>
   );
 }
@@ -549,7 +639,7 @@ function RemixVariations({ trace, demoMode }: { trace: DiscoveryTrace; demoMode:
       <div className="explore-detail-unavailable" role="status">
         <RepeatIcon />
         <div>
-          <strong>Remixed variations จะอ่านจาก lineage API</strong>
+          <strong>เวอร์ชัน Remix จะพร้อมเมื่อข้อมูลเส้นทางครบ</strong>
           <p>จำนวน Remix ที่มีอยู่ตอนนี้: {trace.remixCount}</p>
         </div>
       </div>
@@ -593,6 +683,7 @@ export function ExploreTraceDetail({
   onCommentDelete,
   onFollowCommenter,
   onOpenMedia,
+  onBookingUnavailable,
 }: ExploreTraceDetailProps) {
   const stops = useMemo(
     () => (demoMode ? buildDemoStops(trace) : []),
@@ -668,7 +759,7 @@ export function ExploreTraceDetail({
       </header>
 
       <div className="explore-detail-panel__body explore-detail-panel__body--animated" key={trace.id}>
-        <DetailMediaViewer trace={trace} demoMode={demoMode} onOpenMedia={onOpenMedia} />
+        <DetailMediaViewer trace={trace} onOpenMedia={onOpenMedia} />
 
         <section className="explore-detail-story-lead" aria-labelledby="explore-story-title">
           <span className="eyebrow">THE STORY OF THIS TRACE</span>
@@ -676,13 +767,15 @@ export function ExploreTraceDetail({
           <p>{trace.description}</p>
         </section>
 
+        <DetailOverview trace={trace} />
+
         <section className="explore-detail-reason explore-detail-reason--story" aria-labelledby="explore-reason-title">
           <div className="explore-detail-reason__icon" aria-hidden="true"><ShieldCheck size={18} /></div>
           <div><span className="eyebrow">WHY THIS TRACE</span><h3 id="explore-reason-title">เหตุผลที่แนะนำให้คุณ</h3><p>{reason}</p></div>
         </section>
 
         <section className="explore-detail-section" aria-labelledby="explore-stops-title">
-          <div className="explore-detail-section__heading"><div><span className="eyebrow">JOURNEY PLAN</span><h3 id="explore-stops-title">เรื่องราวระหว่างทาง</h3></div><span className="muted-label">{demoMode ? `${stops.length} จุดแวะ` : "Customer API"}</span></div>
+          <div className="explore-detail-section__heading"><div><span className="eyebrow">JOURNEY PLAN</span><h3 id="explore-stops-title">เรื่องราวระหว่างทาง</h3></div><span className="muted-label">{demoMode ? `${stops.length} จุดแวะ` : "ข้อมูลเส้นทาง"}</span></div>
           <StopTimeline
             stops={stops}
             demoMode={demoMode}
@@ -692,11 +785,13 @@ export function ExploreTraceDetail({
             onCommentDelete={onCommentDelete}
             onFollowCommenter={onFollowCommenter}
             onOpenMedia={onOpenMedia}
+            onClose={onClose}
+            onBookingUnavailable={onBookingUnavailable}
           />
         </section>
 
         <section className="explore-detail-section" aria-labelledby="explore-remix-title">
-          <div className="explore-detail-section__heading"><div><span className="eyebrow">TRACE LINEAGE</span><h3 id="explore-remix-title">Remixed variations</h3></div><span className="muted-label">{trace.remixCount} Remix</span></div>
+          <div className="explore-detail-section__heading"><div><span className="eyebrow">MORE WAYS TO WALK</span><h3 id="explore-remix-title">Remixed variations</h3></div><span className="muted-label">{trace.remixCount} Remix</span></div>
           <RemixVariations trace={trace} demoMode={demoMode} />
         </section>
 
@@ -706,7 +801,7 @@ export function ExploreTraceDetail({
             <Star size={18} aria-hidden="true" />
           </div>
           {trace.rating === null ? (
-            <div className="explore-detail-unavailable" role="status"><ShieldCheck size={18} aria-hidden="true" /><div><strong>ยังไม่มีคะแนนที่ยืนยันได้</strong><p>ระบบจะไม่แสดง rating จนกว่าจะมีข้อมูลจาก public projection</p></div></div>
+            <div className="explore-detail-unavailable" role="status"><ShieldCheck size={18} aria-hidden="true" /><div><strong>ยังไม่มีคะแนนที่ยืนยันได้</strong><p>ระบบจะแสดงคะแนนเมื่อมีข้อมูลจากคนที่ไปจริงเพียงพอ</p></div></div>
           ) : (
             <div className="explore-proof-summary">
               <strong><Star size={16} fill="currentColor" aria-hidden="true" />{trace.rating.toFixed(1)}</strong>
@@ -720,11 +815,6 @@ export function ExploreTraceDetail({
         <InlineCommentSection
           title={trace.title}
           comments={trace.comments}
-          media={(trace.coverImages ?? []).map((src, index) => ({
-            src,
-            alt: `${trace.title} รูปที่ ${index + 1}`,
-            fallback: trace.coverTiles[index] ?? "TRACE",
-          }))}
           focusRequestKey={commentFocusRequestKey}
           onSubmit={onCommentSubmit}
           onEdit={onCommentEdit}
@@ -734,12 +824,11 @@ export function ExploreTraceDetail({
       </div>
 
       <footer className="explore-detail-panel__footer">
-        <button className="button button--ghost" type="button" disabled={saveState?.pending} aria-busy={saveState?.pending || undefined} onClick={() => handlers.onAction?.(trace, "trace")}>
-          {saveState?.pending ? <span className="button-spinner" aria-hidden="true" /> : trace.saved ? <Check size={15} aria-hidden="true" /> : <Bookmark size={15} aria-hidden="true" />}
-          {trace.saved ? "บันทึกแล้ว" : "Trace It"}
+        <button className="icon-button icon-button--subtle explore-detail-panel__save" type="button" disabled={saveState?.pending} aria-busy={saveState?.pending || undefined} aria-label={trace.saved ? "นำ Trace ออกจากรายการบันทึก" : "บันทึก Trace"} onClick={() => handlers.onAction?.(trace, "trace")}>
+          {saveState?.pending ? <span className="button-spinner" aria-hidden="true" /> : trace.saved ? <Check size={17} aria-hidden="true" /> : <Bookmark size={17} aria-hidden="true" />}
         </button>
-        <button className="button button--dark explore-detail-panel__start" type="button" onClick={onStartJourney}>
-          <Navigation size={15} aria-hidden="true" />เริ่มเดินทางตาม Trace นี้
+        <button className="button button--white-prismatic explore-detail-panel__start" type="button" onClick={onStartJourney}>
+          <Navigation size={16} aria-hidden="true" />เริ่มเดินตาม Trace
         </button>
       </footer>
       <p className="sr-only" role="status">{shareState?.error || ""}</p>
@@ -747,14 +836,18 @@ export function ExploreTraceDetail({
   );
 }
 
-export function ExploreDetailEmpty() {
+export function ExploreDetailEmpty({ onClose }: { onClose?: () => void } = {}) {
   return (
     <div className="explore-detail-empty">
       <span className="explore-detail-empty__icon" aria-hidden="true"><ArrowLeft size={20} /></span>
       <span className="eyebrow">TRACE DETAIL</span>
-      <h2>เลือก Trace จากฟีด</h2>
-      <p>รายละเอียดเส้นทาง, creator และ stop timeline จะแสดงตรงนี้ทันทีเมื่อคุณเลือกการ์ด</p>
-      <span className="muted-label"><ExternalLink size={14} aria-hidden="true" />เริ่มจากการ์ดฝั่งซ้าย</span>
+      <h2>ข้อมูลกำลังอยู่ระหว่างการอัปเดต</h2>
+      <p>รายละเอียดเส้นทางนี้ยังจัดส่งไม่ครบ จึงคงคุณไว้ในหน้าเดิมแทนการพาไปหน้า error</p>
+      {onClose ? (
+        <button className="text-link text-link--button" type="button" onClick={onClose}>ย้อนกลับ</button>
+      ) : (
+        <span className="muted-label"><ExternalLink size={14} aria-hidden="true" />เริ่มจากการ์ดฝั่งซ้าย</span>
+      )}
     </div>
   );
 }

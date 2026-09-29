@@ -206,6 +206,7 @@ export function useMapDiscovery(): MapDiscoveryViewModel {
                   : {}),
                 sort: "relevance",
                 limit: MAP_RESULT_LIMIT,
+                ...(debouncedFilters.savedOnly ? { savedOnly: true } : {}),
               },
               { signal },
             );

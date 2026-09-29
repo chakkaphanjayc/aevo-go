@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { isMapBoundsEqual, parseMapBounds, serializeMapBounds, toStoreFeatureCollection, toStoreMapSummary } from "@/features/map/contracts";
+import { isMapBoundsEqual, isStoreSelection, parseMapBounds, serializeMapBounds, toStoreFeatureCollection, toStoreMapSummary } from "@/features/map/contracts";
 
 describe("map contracts", () => {
+  it("matches canonical selections by ID while preserving legacy slug selection", () => {
+    const store = { id: "123e4567-e89b-12d3-a456-426614174000", slug: "river-coffee" };
+
+    expect(isStoreSelection(store, store.id)).toBe(true);
+    expect(isStoreSelection(store, store.slug)).toBe(true);
+    expect(isStoreSelection(store, "other-place")).toBe(false);
+  });
+
   it("round-trips a viewport without leaking map-library types", () => {
     const bounds = parseMapBounds("100.480000,13.700000,100.560000,13.790000");
     expect(bounds).toEqual({ west: 100.48, south: 13.7, east: 100.56, north: 13.79 });

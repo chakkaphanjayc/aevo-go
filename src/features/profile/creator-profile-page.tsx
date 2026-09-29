@@ -39,6 +39,7 @@ import { ExploreTraceDetail } from "@/features/discovery/explore-trace-detail";
 import { PostInlineDetail } from "@/features/discovery/post-inline-detail";
 import type { StoreMapSummary, TraceMapSummary } from "@/features/map/contracts";
 import { MapLibreMap, type MapProviderStatus } from "@/features/map/maplibre-map";
+import { useFlipTransition } from "@/lib/use-flip-transition";
 import { demoPosts, demoTraces } from "@/features/discovery/demo-discovery";
 import type {
   DiscoveryAction,
@@ -236,6 +237,16 @@ function initialsFromName(value: string): string {
 function formatHours(minutes: number | null): string {
   if (minutes === null) return "0 ชม.";
   return `${minutes / 60} ชม.`;
+}
+
+function safeWindowScrollTo(options: ScrollToOptions): void {
+  if (typeof window === "undefined" || typeof window.scrollTo !== "function") return;
+  if (typeof navigator !== "undefined" && navigator.userAgent?.includes("jsdom")) return;
+  try {
+    window.scrollTo(options);
+  } catch {
+    // JSDOM or environments without full scroll implementation
+  }
 }
 
 function ProfileDemoNotice() {
@@ -670,7 +681,17 @@ export function CreatorProfilePage() {
   const activeDetailTrace = detailTrace || closingDetailTrace;
   const activeSelectedPost = selectedPost || closingSelectedPost;
 
+  const contentRef = useRef<HTMLElement>(null);
+  useFlipTransition(isDetailActive, {
+    externalRef: contentRef,
+    durationMs: 320,
+    closeDurationMs: 240,
+  });
+
+  const savedPageScrollTopRef = useRef<number | null>(null);
+
   const openTrace = (trace: DiscoveryTrace) => {
+    savedPageScrollTopRef.current = window.pageYOffset || document.documentElement.scrollTop || 0;
     if (closingTimeoutRef.current !== null) {
       window.clearTimeout(closingTimeoutRef.current);
       closingTimeoutRef.current = null;
@@ -681,6 +702,7 @@ export function CreatorProfilePage() {
     updateUrl({ tab: "traces", item: trace.id });
   };
   const openPost = (post: DiscoveryPost) => {
+    savedPageScrollTopRef.current = window.pageYOffset || document.documentElement.scrollTop || 0;
     if (closingTimeoutRef.current !== null) {
       window.clearTimeout(closingTimeoutRef.current);
       closingTimeoutRef.current = null;
@@ -692,6 +714,7 @@ export function CreatorProfilePage() {
   };
   const closeDetail = () => {
     setMediaModalOpen(false);
+    const targetScroll = savedPageScrollTopRef.current;
     if (detailTrace || selectedPost) {
       setClosingDetailTrace(detailTrace);
       setClosingSelectedPost(selectedPost);
@@ -705,9 +728,21 @@ export function CreatorProfilePage() {
         setClosingSelectedPost(null);
         closingTimeoutRef.current = null;
         updateUrl({ item: null });
+        if (targetScroll !== null) {
+          safeWindowScrollTo({
+            top: targetScroll,
+            behavior: "instant",
+          });
+        }
       }, 200);
     } else {
       updateUrl({ item: null });
+      if (targetScroll !== null) {
+        safeWindowScrollTo({
+          top: targetScroll,
+          behavior: "instant",
+        });
+      }
     }
   };
   const openMedia = (index: number) => {
@@ -1047,7 +1082,7 @@ export function CreatorProfilePage() {
 
       {/* Centered Content Tabs & Feed */}
       <div className={`creator-profile-layout${isDetailActive ? " has-detail" : ""}`}>
-        <main className="creator-profile-content" id="creator-content">
+        <main ref={contentRef} className="creator-profile-content" id="creator-content">
           <div className="profile-tabs-centered">
             <GlidingGroup
               items={profileTabs}

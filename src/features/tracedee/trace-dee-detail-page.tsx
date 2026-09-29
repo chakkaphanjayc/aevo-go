@@ -6,9 +6,10 @@ import { ApiClientError } from "@/lib/api-client";
 import { applyTraceDeeJourneyAction, applyTraceDeeTraceAction, createTraceDeeComment, createTraceDeeJourney, createTraceDeePost, createTraceDeeRemix, deleteTraceDeeContent, editTraceDeeContent, getTraceDeeComments, getTraceDeeJourneyForTrace, getTraceDeePosts, getTraceDeeRemixDraft, getTraceDeeTrace, getTraceDeeTraceLineage, publishTraceDeeRemix, rateTraceDeeJourney, reportTraceDeeContent, searchTraceDeePlaces, setTraceDeeCommentHelpful, setTraceDeeTracerFollow, setTraceDeeUserRelation, updateTraceDeeJourneyStop, updateTraceDeeRemix } from "@/lib/customer-api";
 import { SpatialDockedLayout, SpatialDockedSidePanel } from "@/components/spatial-docked-side-panel";
 import { createIdempotencyKey } from "@/lib/idempotency";
-import { customerDataMode } from "@/lib/env";
+import { customerDataMode, placeApiMode } from "@/lib/env";
 import { getCustomerSession } from "@/lib/session";
 import { beginGoSignIn } from "@/lib/sso";
+import { canonicalPlaceIdSchema } from "@/contracts/place";
 import type { TraceDeeComment, TraceDeeJourneyCompletionVerification, TraceDeeJourneyDetail, TraceDeePostResponse, TraceDeeRatingResponse, TraceDeeRemixDraft, TraceDeeTraceAction, TraceDeeTraceDetail } from "@/contracts/tracedee";
 
 const traceDeeRatingTags = [
@@ -24,6 +25,18 @@ function RatingStars({ value }: { value: number }) {
 function formatBudget(minor: number | null): string {
   if (minor === null) return "งบประมาณยืดหยุ่น";
   return new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 0 }).format(minor / 100);
+}
+
+function tracePlaceMapHref(place: TraceDeeTraceDetail["stops"][number]["place"]): string {
+  const reference = place.placeReference;
+  const canonicalPlaceId =
+    reference && (reference.resolutionStatus === "resolved" || reference.resolutionStatus === "redirected")
+      ? canonicalPlaceIdSchema.safeParse(reference.canonicalPlaceId)
+      : null;
+  const selected = placeApiMode === "canonical" && canonicalPlaceId?.success
+    ? canonicalPlaceId.data
+    : place.slug;
+  return `/map?mode=places&selected=${encodeURIComponent(selected)}`;
 }
 
 async function readOptionalCompletionEvidence(
@@ -116,7 +129,7 @@ function TraceDockStops({ trace }: { trace: TraceDeeTraceDetail }) {
                   </span>
                 </div>
                 <p className="spatial-stop__note">{stop.note || stop.place.description || "จุดแวะใน Trace นี้"}</p>
-                <Link className="button button--ghost button--small" to={`/map?mode=places&selected=${encodeURIComponent(stop.place.slug)}`}>
+                <Link className="button button--ghost button--small" to={tracePlaceMapHref(stop.place)}>
                   <MapPin size={14} aria-hidden="true" />ดูบนแผนที่
                 </Link>
               </div>

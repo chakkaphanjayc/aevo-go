@@ -63,6 +63,13 @@ export interface StoreMapSummary {
   distanceMeters?: number;
 }
 
+export function isStoreSelection(
+  store: Pick<StoreMapSummary, "id" | "slug">,
+  selection: string | null | undefined,
+): boolean {
+  return Boolean(selection) && (store.slug === selection || store.id === selection);
+}
+
 export interface StoreFeatureProperties {
   storeId: string;
   slug: string;

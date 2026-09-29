@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { feedPlaceReferenceSchema } from "@/contracts/feed";
 
 export const traceDeeFeedItemSchema = z.object({
   itemType: z.literal("TRACE"),
@@ -38,7 +39,9 @@ export const traceDeePlaceSchema = z.object({
   description: z.string(),
   imageUrl: z.string().nullable(),
   latitude: z.number().nullable(),
-  longitude: z.number().nullable()
+  longitude: z.number().nullable(),
+  /** Optional during the TraceDee-to-Place migration; never inferred by Go. */
+  placeReference: feedPlaceReferenceSchema.nullable().optional()
 });
 
 export const traceDeeStopSchema = z.object({

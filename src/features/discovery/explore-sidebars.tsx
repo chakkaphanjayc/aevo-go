@@ -315,9 +315,9 @@ function BookablePanel({
         icon={Ticket}
       />
       {places.length > 0 ? (
-        <div className="explore-sidebar-place-list">
+        <div className="explore-sidebar-place-list explore-sidebar-place-list--scroll" role="list" aria-label="ร้านที่เปิดรับจองผ่าน Aevo Play">
           {places.slice(0, 2).map((place) => (
-            <article className="explore-sidebar-place" key={place.id}>
+            <article className="explore-sidebar-place" key={place.id} role="listitem">
               <div className="explore-sidebar-place__row">
                 {place.imageUrl ? (
                   <img
@@ -502,12 +502,14 @@ export function ExploreInsightsSidebar({
       <div className="explore-sidebar__stack">
         <MiniMapPreview demoMode={demoMode} trace={mapTrace} />
         <BookablePanel places={partnerPlaces} />
-        <TrendingTracersPanel
-          tracers={trendingTracers}
-          creatorFollowing={creatorFollowing}
-          creatorFollowState={creatorFollowState}
-          onCreatorFollow={onCreatorFollow}
-        />
+        {demoMode && (
+          <TrendingTracersPanel
+            tracers={trendingTracers}
+            creatorFollowing={creatorFollowing}
+            creatorFollowState={creatorFollowState}
+            onCreatorFollow={onCreatorFollow}
+          />
+        )}
         <CommunityPulse demoMode={demoMode} trace={mapTrace} />
       </div>
     </aside>

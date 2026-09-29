@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { discoveryReasonCodeSchema } from "@/contracts/discovery";
 
 export const feedTabSchema = z.enum(["for_you", "following", "nearby"]);
 export const feedItemTypeSchema = z.enum(["TRACE", "PLACE"]);
@@ -40,7 +41,7 @@ const feedTraceItemSchema = z
   })
   .strict();
 
-const feedPlaceReferenceSchema = z
+export const feedPlaceReferenceSchema = z
   .object({
     namespace: z.string().min(1),
     externalId: z.string().min(1),
@@ -82,6 +83,28 @@ export const feedItemSchema = z.discriminatedUnion("itemType", [
   feedPlaceItemSchema,
 ]);
 
+export const feedModuleItemReferenceSchema = z
+  .object({
+    itemType: feedItemTypeSchema,
+    itemId: z.string().min(1),
+    itemToken: z.string().min(1),
+  })
+  .strict();
+
+export const feedModuleSchema = z
+  .object({
+    moduleId: z.enum([
+      "FOR_YOU",
+      "NEAR_SELECTED_AREA",
+      "NEW_AND_USEFUL",
+      "COMMUNITY_FAVORITES",
+    ]),
+    reasonCode: discoveryReasonCodeSchema.nullable(),
+    items: z.array(feedModuleItemReferenceSchema),
+    degraded: z.boolean().optional(),
+  })
+  .strict();
+
 export const feedResponseSchema = z
   .object({
     feedSessionId: z.string().min(1),
@@ -91,6 +114,7 @@ export const feedResponseSchema = z
     nextCursor: z.string().nullable(),
     degraded: z.boolean(),
     requestId: z.string().nullable().optional(),
+    modules: z.array(feedModuleSchema).optional(),
   })
   .strict();
 
@@ -142,6 +166,45 @@ export const feedEventBatchResponseSchema = z
   })
   .strict();
 
+export const feedNegativeFeedbackRequestSchema = z
+  .object({
+    schemaVersion: z.literal("1"),
+    feedSessionId: z.string().min(1),
+    itemToken: z.string().min(1),
+    action: z.enum(["hide", "unhide"]),
+    reasonCode: z.enum(["NOT_RELEVANT", "ALREADY_SEEN", "TOO_FAR", "OTHER"]).optional(),
+  })
+  .strict();
+
+export const feedNegativeFeedbackResponseSchema = z
+  .object({
+    itemType: feedItemTypeSchema,
+    itemId: z.string().min(1),
+    action: z.literal("HIDE"),
+    active: z.boolean(),
+    updatedAt: z.string().min(1),
+    requestId: z.string().optional().nullable(),
+  })
+  .strict();
+
+export const feedNegativeFeedbackHistoryEntrySchema = z
+  .object({
+    itemType: feedItemTypeSchema,
+    itemId: z.string().min(1),
+    action: z.literal("HIDE"),
+    reasonCode: z.enum(["NOT_RELEVANT", "ALREADY_SEEN", "TOO_FAR", "OTHER"]).nullable().optional(),
+    active: z.boolean(),
+    createdAt: z.string().min(1),
+  })
+  .strict();
+
+export const feedNegativeFeedbackHistoryResponseSchema = z
+  .object({
+    entries: z.array(feedNegativeFeedbackHistoryEntrySchema),
+    requestId: z.string().optional().nullable(),
+  })
+  .strict();
+
 export type FeedTab = z.infer<typeof feedTabSchema>;
 export type FeedItemType = z.infer<typeof feedItemTypeSchema>;
 export type FeedReasonCode = z.infer<typeof feedReasonCodeSchema>;
@@ -150,8 +213,14 @@ export type FeedTraceItem = z.infer<typeof feedTraceItemSchema>;
 export type FeedPlaceReference = z.infer<typeof feedPlaceReferenceSchema>;
 export type FeedPlaceItem = z.infer<typeof feedPlaceItemSchema>;
 export type FeedItem = z.infer<typeof feedItemSchema>;
+export type FeedModuleItemReference = z.infer<typeof feedModuleItemReferenceSchema>;
+export type FeedModule = z.infer<typeof feedModuleSchema>;
 export type FeedResponse = z.infer<typeof feedResponseSchema>;
 export type FeedEventMetadata = z.infer<typeof feedEventMetadataSchema>;
 export type FeedEvent = z.infer<typeof feedEventSchema>;
 export type FeedEventBatch = z.infer<typeof feedEventBatchSchema>;
 export type FeedEventBatchResponse = z.infer<typeof feedEventBatchResponseSchema>;
+export type FeedNegativeFeedbackRequest = z.infer<typeof feedNegativeFeedbackRequestSchema>;
+export type FeedNegativeFeedbackResponse = z.infer<typeof feedNegativeFeedbackResponseSchema>;
+export type FeedNegativeFeedbackHistoryEntry = z.infer<typeof feedNegativeFeedbackHistoryEntrySchema>;
+export type FeedNegativeFeedbackHistoryResponse = z.infer<typeof feedNegativeFeedbackHistoryResponseSchema>;

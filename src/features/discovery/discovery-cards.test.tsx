@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { PostCard, TraceCard } from "@/features/discovery/discovery-cards";
@@ -85,5 +85,25 @@ describe("discovery cards Twitter-style UX/UI", () => {
     expect(selectedTrace).toBe(trace);
     expect(screen.queryByText(/MEDIA PREVIEW/i)).not.toBeInTheDocument();
   });
-});
 
+  it("uses the primary Trace action when onStartTrace is provided", () => {
+    const trace = demoTraces[0];
+    let startedTrace: typeof trace | null = null;
+    render(
+      <MemoryRouter>
+        <TraceCard
+          item={trace}
+          handlers={{
+            onStartTrace: (selected) => {
+              startedTrace = selected;
+            },
+          }}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "เริ่มเดินตาม Trace" }));
+
+    expect(startedTrace).toBe(trace);
+  });
+});

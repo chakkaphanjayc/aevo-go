@@ -35,7 +35,7 @@ import type { CustomerStoreSummary } from "@/contracts/customer";
 import type { TraceDeeFeedItem } from "@/contracts/tracedee";
 import { areas, categories, demoStores, type StoreSummary } from "@/data/demo";
 import { getTraceDeeFeed } from "@/lib/customer-api";
-import { isGatewayOfflineError } from "@/lib/api-client";
+import { ApiClientError, isGatewayOfflineError } from "@/lib/api-client";
 import {
   customerDataMode,
   mapStyleUrl,
@@ -44,6 +44,7 @@ import {
   placeApiMode,
 } from "@/lib/env";
 import { getPlaceMapOverlay } from "@/lib/place-api";
+import { beginGoSignIn } from "@/lib/sso";
 import { mapAttribution, mapProviderPolicy } from "./provider-policy";
 import { createPlatformBridge } from "@/platform";
 import type { GeoPoint } from "@/platform";
@@ -54,6 +55,7 @@ import {
 } from "./maplibre-map";
 import { MapBookingDrawer } from "./map-booking-drawer";
 import {
+  isStoreSelection,
   serializeMapBounds,
   toStoreMapSummary,
   type MapBounds,
@@ -734,6 +736,7 @@ export function MapPage() {
       map.zoom,
       map.filters.query ?? "",
       map.filters.categoryIds,
+      map.filters.savedOnly ?? false,
     ],
     queryFn: ({ signal }) =>
       getPlaceMapOverlay(
@@ -745,6 +748,7 @@ export function MapPage() {
             ? { categoryIds: toCanonicalCategoryIds(map.filters.categoryIds) }
             : {}),
           limit: 300,
+          ...(map.filters.savedOnly ? { savedOnly: true } : {}),
         },
         { signal },
       ),
@@ -766,7 +770,10 @@ export function MapPage() {
     initialSearchCommittedRef.current = true;
     map.commitBounds(map.cameraBounds ?? fallbackBounds, map.zoom || DEFAULT_VIEW.zoom, {
       area: map.filters.area ?? "ใกล้ฉัน",
-      selectedSlug: null,
+      // Preserve an explicit Feed/Trace selection while the initial bounded
+      // map request is committed. Clearing it here makes canonical UUID deep
+      // links appear to work but silently drops the selected Place.
+      ...(map.selectedSlug ? { selectedSlug: map.selectedSlug } : {}),
     });
   }, [
     fallbackBounds,
@@ -774,6 +781,7 @@ export function MapPage() {
     map.commitBounds,
     map.committedBounds,
     map.filters.area,
+    map.selectedSlug,
     map.zoom,
     mapProviderStatus,
   ]);
@@ -782,6 +790,11 @@ export function MapPage() {
   }, [map.selectedSlug, map.mode]);
 
   const area = map.filters.area ?? "ใกล้ฉัน";
+  const canonicalSavedSignInRequired =
+    placeApiMode === "canonical" &&
+    map.filters.savedOnly === true &&
+    map.error instanceof ApiClientError &&
+    map.error.status === 401;
   const liveMapStores = useMemo(
     () =>
       map.results
@@ -880,8 +893,8 @@ export function MapPage() {
     return sortTraceResults(traces, map.sort);
   }, [liveTraces, map.filters.area, map.mode, map.sort, traceGatewayOffline]);
   const selectedPlace =
-    listStores.find((store) => store.slug === map.selectedSlug) ??
-    mapStores.find((store) => store.slug === map.selectedSlug || store.id === map.selectedSlug) ??
+    listStores.find((store) => isStoreSelection(store, map.selectedSlug)) ??
+    mapStores.find((store) => isStoreSelection(store, map.selectedSlug)) ??
     null;
   const selectedTrace =
     mapTraces.find((trace) => trace.slug === map.selectedSlug) ?? null;
@@ -1558,14 +1571,28 @@ export function MapPage() {
               role="alert"
             >
               <CircleHelp size={17} aria-hidden="true" />
-              <span>โหลดสถานที่ล่าสุดไม่ได้ ลองใหม่หรือเลือกย่านอื่น</span>
-              <button
-                className="button button--ghost"
-                type="button"
-                onClick={() => void map.retry()}
-              >
-                ลองใหม่
-              </button>
+              <span>
+                {canonicalSavedSignInRequired
+                  ? "เข้าสู่ระบบเพื่อใช้ตัวกรอง Saved ของ canonical Place"
+                  : "โหลดสถานที่ล่าสุดไม่ได้ ลองใหม่หรือเลือกย่านอื่น"}
+              </span>
+              {canonicalSavedSignInRequired ? (
+                <button
+                  className="button button--ghost"
+                  type="button"
+                  onClick={() => void beginGoSignIn(window.location.pathname + window.location.search)}
+                >
+                  เข้าสู่ระบบ
+                </button>
+              ) : (
+                <button
+                  className="button button--ghost"
+                  type="button"
+                  onClick={() => void map.retry()}
+                >
+                  ลองใหม่
+                </button>
+              )}
             </div>
           ) : map.isSearching ||
             (map.mode === "traces" && traceQuery.isLoading) ? (
@@ -1580,13 +1607,13 @@ export function MapPage() {
                   <div
                     key={store.id}
                     ref={(element) => {
-                      if (store.slug === map.selectedSlug)
+                      if (isStoreSelection(store, map.selectedSlug))
                         selectedResultRef.current = element;
                     }}
                   >
                     <MapResultCard
                       store={store}
-                      selected={store.slug === map.selectedSlug}
+                      selected={isStoreSelection(store, map.selectedSlug)}
                       hovered={store.slug === map.hoveredSlug}
                       onSelect={() => map.selectStore(store.slug)}
                       onHover={(hovered) =>

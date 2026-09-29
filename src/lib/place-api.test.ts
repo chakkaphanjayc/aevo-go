@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getNearbyPlaces, getPlaceDetail, getPlaceMapOverlay, searchPlaces } from "@/lib/place-api";
+import {
+  getNearbyPlaces,
+  getPlaceDetail,
+  getPlaceMapOverlay,
+  listSavedCanonicalPlaces,
+  searchPlaces,
+  setCanonicalPlaceSaved,
+} from "@/lib/place-api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -38,13 +45,15 @@ describe("canonical Place API adapter", () => {
       north: 14,
       zoom: 12,
       categoryIds: ["cafe", "restaurant"],
-      limit: 300
+      limit: 300,
+      savedOnly: true
     });
 
     const requestUrl = String(fetchMock.mock.calls[0]?.[0]);
     expect(requestUrl).toContain("/api/v1/public/places/map?");
     expect(requestUrl).toContain("categoryId=cafe%2Crestaurant");
     expect(requestUrl).toContain("limit=300");
+    expect(requestUrl).toContain("savedOnly=true");
   });
 
   it("keeps Search, Nearby, and Detail on separate routes", async () => {
@@ -61,5 +70,43 @@ describe("canonical Place API adapter", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/v1/public/places/search?q=cafe");
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("/api/v1/public/places/nearby?");
     expect(String(fetchMock.mock.calls[2]?.[0])).toContain("/api/v1/public/places/123e4567-e89b-12d3-a456-426614174000");
+  });
+
+  it("uses the authenticated canonical Place save projection routes", async () => {
+    const placeId = "123e4567-e89b-12d3-a456-426614174000";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        savedPlaces: [{ placeId, savedAt: "2026-09-27T00:00:00.000Z" }],
+        requestId: "saved-list-1",
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        placeId,
+        saved: true,
+        changed: true,
+        updatedAt: "2026-09-27T00:00:00.000Z",
+        requestId: "saved-1",
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        placeId,
+        saved: false,
+        changed: true,
+        updatedAt: "2026-09-27T00:01:00.000Z",
+        requestId: "saved-2",
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const savedPlaces = await listSavedCanonicalPlaces();
+    const saved = await setCanonicalPlaceSaved(placeId, true, "explore-place-save-1");
+    const removed = await setCanonicalPlaceSaved(placeId, false, "explore-place-save-2");
+
+    expect(savedPlaces[0]?.placeId).toBe(placeId);
+    expect(saved.saved).toBe(true);
+    expect(removed.saved).toBe(false);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/v1/public/me/saved-places");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(`/api/v1/public/places/${placeId}/save`);
+    expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("POST");
+    expect(fetchMock.mock.calls[2]?.[1]?.method).toBe("DELETE");
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("idempotency-key")).toBe("explore-place-save-1");
+    expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).get("idempotency-key")).toBe("explore-place-save-2");
   });
 });

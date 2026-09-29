@@ -241,6 +241,22 @@ export const placeDetailResponseSchema = placeResponseMetadataSchema.extend({
   place: placeDetailSchema
 });
 
+export const placeSaveResponseSchema = z.object({
+  placeId: canonicalPlaceIdSchema,
+  saved: z.boolean(),
+  changed: z.boolean(),
+  updatedAt: z.string().datetime({ offset: true }),
+  requestId: z.string().min(1).optional()
+}).strict();
+
+export const savedPlacesResponseSchema = z.object({
+  savedPlaces: z.array(z.object({
+    placeId: canonicalPlaceIdSchema,
+    savedAt: z.string().datetime({ offset: true })
+  }).strict()),
+  requestId: z.string().min(1).optional()
+}).strict();
+
 export type CanonicalPlaceId = z.infer<typeof canonicalPlaceIdSchema>;
 export type PlaceGeometry = z.infer<typeof placeGeometrySchema>;
 export type PlaceGeoPoint = z.infer<typeof placeGeoPointSchema>;
@@ -250,3 +266,5 @@ export type PlaceSearchResult = z.infer<typeof placeSearchResultSchema>;
 export type PlaceSearchResponse = z.infer<typeof placeSearchResponseSchema>;
 export type PlaceNearbyResponse = z.infer<typeof placeNearbyResponseSchema>;
 export type PlaceDetail = z.infer<typeof placeDetailSchema>;
+export type PlaceSaveResponse = z.infer<typeof placeSaveResponseSchema>;
+export type SavedPlacesResponse = z.infer<typeof savedPlacesResponseSchema>;

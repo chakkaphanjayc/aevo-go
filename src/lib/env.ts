@@ -50,8 +50,9 @@ if (!parsed.success) {
 
 export const appEnvironment = parsed.data.VITE_APP_ENV ?? (import.meta.env.PROD ? "production" : "development");
 export const customerDataMode = parsed.data.VITE_GO_DATA_MODE ?? "live";
-// Keep the legacy Customer Gateway as the default until Core projection rows
-// and route smoke tests are present in the target environment.
+// Keep the legacy Customer Gateway as the default until the Core canonical
+// Place save migration, authenticated route smoke, and ownership/parity gate
+// are complete in the target environment.
 export const placeApiMode = parsed.data.VITE_PLACE_API_MODE ?? "legacy";
 export const mapStyleUrl = parsed.data.VITE_MAP_STYLE_URL ?? "https://tiles.openfreemap.org/styles/dark";
 export const mapStyleAttribution = parsed.data.VITE_MAP_STYLE_ATTRIBUTION ?? "© OpenFreeMap · © OpenStreetMap contributors";

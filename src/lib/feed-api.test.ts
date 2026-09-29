@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getCoreFeedPage, postCoreFeedEvents } from "@/lib/feed-api";
+import { getCoreFeedFeedbackHistory, getCoreFeedPage, postCoreFeedEvents, postCoreFeedFeedback } from "@/lib/feed-api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -34,6 +34,25 @@ describe("Explore Feed transport adapter", () => {
     expect(requestUrl).toContain("cursor=cursor-1");
   });
 
+  it("sends explicit discovery intent as request-local context", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(corePage), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getCoreFeedPage({
+      tab: "for_you",
+      vibe: "art",
+      category: "cafe",
+      date: "2026-09-26",
+      partySize: 2,
+    });
+
+    const requestUrl = String(fetchMock.mock.calls[0]?.[0]);
+    expect(requestUrl).toContain("vibe=art");
+    expect(requestUrl).toContain("category=cafe");
+    expect(requestUrl).toContain("date=2026-09-26");
+    expect(requestUrl).toContain("party=2");
+  });
+
   it("posts a strict event batch to the Core route", async () => {
     const eventResponse = {
       accepted: 1,
@@ -61,5 +80,70 @@ describe("Explore Feed transport adapter", () => {
     expect(result.accepted).toBe(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/v1/public/feed/events");
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).events[0].itemToken).toBe("opaque-token");
+  });
+
+  it("posts authenticated negative feedback to the Core route", async () => {
+    const feedbackResponse = {
+      itemType: "TRACE",
+      itemId: "trace-1",
+      action: "HIDE",
+      active: true,
+      updatedAt: "2026-09-26T00:00:00.000Z",
+      requestId: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(feedbackResponse), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await postCoreFeedFeedback({
+      schemaVersion: "1",
+      feedSessionId: "feed-session-1",
+      itemToken: "opaque-token",
+      action: "hide",
+      reasonCode: "TOO_FAR",
+    });
+
+    expect(result.itemType).toBe("TRACE");
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/v1/public/feed/feedback");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      action: "hide",
+      reasonCode: "TOO_FAR",
+    });
+
+    const restoreResponse = {
+      ...feedbackResponse,
+      active: false,
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(restoreResponse), { status: 200 }));
+    const restored = await postCoreFeedFeedback({
+      schemaVersion: "1",
+      feedSessionId: "feed-session-1",
+      itemToken: "opaque-token",
+      action: "unhide",
+    });
+    expect(restored.active).toBe(false);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).action).toBe("unhide");
+  });
+
+  it("reads the authenticated private feedback history without exposing tokens", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      entries: [{
+        itemType: "TRACE",
+        itemId: "trace-1",
+        action: "HIDE",
+        reasonCode: "TOO_FAR",
+        active: true,
+        createdAt: "2026-09-26T00:00:00.000Z",
+      }],
+      requestId: null,
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getCoreFeedFeedbackHistory(5);
+
+    expect(result.entries).toHaveLength(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      "/api/v1/public/feed/feedback/history?limit=5",
+    );
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body ?? "")).not.toContain("itemToken");
   });
 });

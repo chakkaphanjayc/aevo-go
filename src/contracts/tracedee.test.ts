@@ -225,6 +225,36 @@ describe("TraceDee community contracts", () => {
     expect(interaction.interaction.interactionType).toBe("DISMISSED");
   });
 
+  it("accepts an explicit canonical Place reference without changing TraceDee source IDs", () => {
+    const place = traceDeePlaceSearchResponseSchema.parse({
+      places: [{
+        id: uuid,
+        slug: "legacy-coffee",
+        name: "Legacy Coffee",
+        area: "Talat Noi",
+        category: "Cafe",
+        description: "A coffee stop",
+        imageUrl: null,
+        latitude: 13.73,
+        longitude: 100.51,
+        placeReference: {
+          namespace: "aevo.tracedee",
+          externalId: uuid,
+          sourceVersion: "unversioned",
+          canonicalPlaceId: "123e4567-e89b-12d3-a456-426614174000",
+          resolutionStatus: "redirected",
+          redirected: true,
+          redirectReason: "merged",
+          resolverVersion: "place-resolver-v1",
+        },
+      }],
+      requestId: "request-1",
+    });
+
+    expect(place.places[0]?.id).toBe(uuid);
+    expect(place.places[0]?.placeReference?.canonicalPlaceId).toBe("123e4567-e89b-12d3-a456-426614174000");
+  });
+
   it("keeps place search results bounded to the public place contract", () => {
     const result = traceDeePlaceSearchResponseSchema.parse({ places: [] });
     expect(result.places).toHaveLength(0);

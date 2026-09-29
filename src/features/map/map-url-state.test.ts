@@ -21,6 +21,13 @@ describe("map URL state", () => {
     expect(state.selectedSlug).toBe("north-star-coffee");
   });
 
+  it("preserves a canonical UUID selection as an opaque URL identity", () => {
+    const placeId = "123e4567-e89b-12d3-a456-426614174000";
+    const state = readMapUrlState(new URLSearchParams(`mode=places&selected=${placeId}`));
+
+    expect(state.selectedSlug).toBe(placeId);
+  });
+
   it("updates filters without dropping unrelated shareable state", () => {
     const next = updateMapUrlState(
       new URLSearchParams("bbox=100.48,13.70,100.56,13.79&searched=1"),

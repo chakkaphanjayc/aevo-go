@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -34,21 +34,22 @@ import { ConnectionStatusCard } from "@/components/connection-status";
 import { GlidingGroup } from "@/components/gliding-group";
 import { SubpageNavigation } from "@/components/subpage-navigation";
 import type { CustomerStoreSummary } from "@/contracts/customer";
+import type { PlaceDetail } from "@/contracts/place";
 import { publicBookingDetailsSchema, type PublicAvailabilitySlot, type PublicBookingDetails, type PublicBookingHold, type PublicCatalogProduct } from "@/contracts/public";
 import { areas, categories, demoStores, getStore, type StoreSummary } from "@/data/demo";
 import { ApiClientError } from "@/lib/api-client";
-import { getDiscovery, getPublicSearchSuggestions, getStoreBySlug, getTraceDeeNotifications, markTraceDeeNotificationRead, searchStores } from "@/lib/customer-api";
+import { getPublicSearchSuggestions, getStoreBySlug, getTraceDeeNotifications, markTraceDeeNotificationRead, searchStores } from "@/lib/customer-api";
 import { safeReturnTo } from "@/lib/deep-link";
-import { customerDataMode } from "@/lib/env";
+import { customerDataMode, placeApiMode } from "@/lib/env";
 import { useCartStore } from "@/lib/cart-store";
 import { localRepository, type FavoriteStoreRecord, type LocalOrderRecord, type LocalReservationRecord } from "@/lib/local-repository";
+import { getPlaceDetail, listSavedCanonicalPlaces, setCanonicalPlaceSaved } from "@/lib/place-api";
 import { confirmPublicBookingHold, createPublicBookingHold, createPublicOrder, createPublicPaymentSession, getPublicBookingTracking, getPublicCatalog, getPublicOrderTracking, getPublicVenueAvailability, listCustomerFavorites, pricePublicCart, removeCustomerFavorite, saveCustomerFavorite } from "@/lib/public-api";
 import { createIdempotencyKey } from "@/lib/idempotency";
 import { completeCustomerSignIn, getCustomerSession, logoutCustomer } from "@/lib/session";
 import { beginGoSignIn, clearGoSsoFlow, readGoSsoFlow } from "@/lib/sso";
 import { createPlatformBridge } from "@/platform";
 import { useUiStore } from "@/lib/ui-store";
-import { TraceDeePreview } from "@/features/tracedee/trace-dee-feed-page";
 import { ExplorePage as DiscoveryExplorePage } from "@/features/discovery/explore-page";
 import { ProfileInsightCard } from "@/features/profile/profile-insight-card";
 
@@ -109,6 +110,72 @@ function SavedStoreCard({ store }: { store: FavoriteStoreRecord }) {
   );
 }
 
+interface CanonicalSavedPlaceRecord {
+  place: PlaceDetail;
+  savedAt: string;
+}
+
+function CanonicalSavedPlaceCard({
+  record,
+  onRemove,
+  removing,
+}: {
+  record: CanonicalSavedPlaceRecord;
+  onRemove: (placeId: string) => void;
+  removing: boolean;
+}) {
+  const { place, savedAt } = record;
+  const address = place.address?.formattedAddress ?? place.area ?? "ยังไม่มีที่อยู่สาธารณะ";
+  const freshness = place.capabilities.freshness.state === "stale"
+    ? "ข้อมูล capability อาจล้าสมัย"
+    : place.capabilities.freshness.state === "fresh"
+      ? "ข้อมูล capability ล่าสุด"
+      : "ยังไม่ทราบ freshness ของ capability";
+
+  return (
+    <article className="store-card store-card--saved-snapshot">
+      <Link
+        className="store-card__visual store-card__visual--mint"
+        to={`/places/${encodeURIComponent(place.id)}`}
+        aria-label={`เปิด ${place.name}`}
+      >
+        <span className="store-card__initials" aria-hidden="true">
+          {place.name.split(" ").map((part) => part[0]).join("")}
+        </span>
+        <span className="store-card__tag">{place.category.label}</span>
+      </Link>
+      <div className="store-card__body">
+        <div className="store-card__title-row">
+          <h3>
+            <Link to={`/places/${encodeURIComponent(place.id)}`}>{place.name}</Link>
+          </h3>
+          <span className="muted-label">saved</span>
+        </div>
+        <p className="store-card__meta">{place.area ?? "ไม่ระบุพื้นที่"} · {address}</p>
+        <div className="store-card__footer">
+          <span className="availability">
+            <span className="availability__dot" aria-hidden="true" />
+            {freshness} · บันทึก {new Date(savedAt).toLocaleDateString("th-TH")}
+          </span>
+          <div className="button-row">
+            <Link className="text-link" to={`/places/${encodeURIComponent(place.id)}`}>
+              ดูรายละเอียด <ArrowRight size={14} aria-hidden="true" />
+            </Link>
+            <button
+              className="text-link text-link--button"
+              type="button"
+              onClick={() => onRemove(place.id)}
+              disabled={removing}
+            >
+              {removing ? "กำลังนำออก…" : "นำออก"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function EmptyState({ icon: Icon, title, description, action }: { icon: typeof Heart; title: string; description: string; action?: React.ReactNode }) {
   return (
     <section className="empty-state">
@@ -130,22 +197,6 @@ function LoadingState({ label }: { label: string }) {
         <span className="skeleton skeleton--short" />
       </div>
     </section>
-  );
-}
-
-function SearchField({ initialValue = "", onSubmit }: { initialValue?: string; onSubmit: (value: string) => void }) {
-  const [value, setValue] = useState(initialValue);
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    onSubmit(value.trim());
-  };
-
-  return (
-    <form className="search-field" onSubmit={submit} role="search">
-      <Search size={19} aria-hidden="true" />
-      <input inputMode="search" autoComplete="off" value={value} onChange={(event) => setValue(event.target.value)} placeholder="ค้นหาร้าน หมวดหมู่ หรือพื้นที่" aria-label="ค้นหา" />
-      <button className="search-field__submit" type="submit" aria-label="เริ่มค้นหา"><ArrowRight size={17} aria-hidden="true" /></button>
-    </form>
   );
 }
 
@@ -212,62 +263,36 @@ function useCustomerStore(storeSlug: string | undefined): {
   };
 }
 
-function LegacyExplorePage() {
-  const navigate = useNavigate();
-  const [recentSearches, setRecentSearches] = useState<string[]>([]);
-  useEffect(() => {
-    let active = true;
-    void localRepository.listRecentSearches().then((values) => { if (active) setRecentSearches(values); });
-    return () => { active = false; };
-  }, []);
-  const discoveryQuery = useQuery({
-    queryKey: ["public-discovery", "featured"],
-    queryFn: ({ signal }) => getDiscovery({ limit: 6 }, { signal }),
-    enabled: customerDataMode === "live",
-    staleTime: 60_000
-  });
-  const featuredStores = customerDataMode === "live" ? mapCustomerStores(discoveryQuery.data?.data ?? []) : demoStores.slice(0, 2);
+function StoreProjectionFallback({
+  storeSlug,
+  onRetry,
+  title = "ข้อมูลสถานที่ยังไม่พร้อม",
+}: {
+  storeSlug?: string;
+  onRetry: () => void;
+  title?: string;
+}) {
+  let label = "สถานที่นี้";
+  if (storeSlug) {
+    try {
+      label = decodeURIComponent(storeSlug).replaceAll("-", " ");
+    } catch {
+      label = "สถานที่นี้";
+    }
+  }
   return (
-    <div className="page-frame">
-      <div className="page-heading page-heading--hero">
-        <div className="page-kicker-row"><div><p className="eyebrow">EXPLORE / BANGKOK</p><h1>หาอะไรดีวันนี้</h1></div></div>
-        <p className="body-copy">ค้นพบร้าน กิจกรรม และช่วงเวลาที่เหมาะกับคุณในที่เดียว</p>
+    <section className="inline-projection-fallback" role="status">
+      <span className="icon-badge" aria-hidden="true"><CircleHelp size={21} /></span>
+      <div>
+        <p className="eyebrow">PLACE DATA</p>
+        <h2>{title}</h2>
+        <p className="body-copy">{label} · ข้อมูลกำลังอยู่ระหว่างการอัปเดต จึงยังไม่เปิดรายละเอียดที่ยืนยันไม่ได้</p>
       </div>
-
-      <section className="discovery-workspace" aria-labelledby="discovery-workspace-title">
-        <div className="discovery-workspace__heading"><div><p className="eyebrow">DISCOVERY WORKSPACE</p><h2 id="discovery-workspace-title">เริ่มจากสิ่งที่อยากทำ</h2></div><span className="muted-label">ค้นหาได้จากชื่อร้าน หมวดหมู่ หรือพื้นที่</span></div>
-        <SearchField onSubmit={(value) => navigate(value ? `/search?q=${encodeURIComponent(value)}` : "/search")} />
-        <div className="discovery-workspace__context"><Link className="discovery-context" to="/map"><MapPinned size={16} aria-hidden="true" /><span>Location<strong>Bangkok</strong></span><ChevronRight size={15} aria-hidden="true" /></Link><span className="discovery-context discovery-context--static"><Compass size={16} aria-hidden="true" /><span>Intent<strong>Explore places</strong></span></span></div>
-        <div className="chip-row" role="group" aria-label="หมวดหมู่ยอดนิยม">
-          {categories.map((category) => <button className="chip" type="button" key={category} onClick={() => navigate(`/search?category=${encodeURIComponent(category)}`)}>{category}</button>)}
-        </div>
-      </section>
-
-      <section className="discovery-hero" aria-labelledby="discovery-title">
-        <div className="discovery-hero__content"><span className="eyebrow">YOUR NEXT PLAN</span><h2 id="discovery-title">ใช้วันว่างให้คุ้มขึ้น</h2><p>ดู availability ก่อนออกจากบ้าน แล้วเก็บแผนที่ชอบไว้กลับมาได้ทุกเมื่อ</p><Link className="button button--dark" to="/map"><MapPinned size={16} aria-hidden="true" />สำรวจใกล้ฉัน</Link></div>
-        <div className="discovery-hero__orb" aria-hidden="true"><Compass size={92} strokeWidth={1.1} /></div>
-      </section>
-
-      <section className="tracedee-entry-card" aria-labelledby="tracedee-entry-title">
-        <div><p className="eyebrow">TRACEDEE / FOLLOW THE LOOP</p><h2 id="tracedee-entry-title">จากการค้นพบ สู่เส้นทางที่ทำได้จริง</h2><p className="body-copy">เปิด Trace ที่คนอื่นสร้างไว้ แล้ว Save หรือ Follow เพื่อกลับมาวางแผนต่อใน Journey</p></div>
-        <Link className="button button--ghost" to="/traces">เปิด TraceDee <ArrowRight size={16} aria-hidden="true" /></Link>
-      </section>
-
-      <TraceDeePreview />
-
-      <ConnectionStatusCard />
-
-      <section className="content-section" aria-labelledby="featured-title">
-        <SectionHeading id="featured-title" title="กำลังเป็นที่สนใจ" action={<Link className="text-link" to="/search">ดูทั้งหมด <ArrowRight size={14} aria-hidden="true" /></Link>} />
-        {customerDataMode === "live" && discoveryQuery.isLoading ? <LoadingState label="กำลังโหลดสถานที่จาก Customer Gateway…" /> : customerDataMode === "live" && discoveryQuery.isError ? <EmptyState icon={CircleHelp} title="โหลดสถานที่ไม่สำเร็จ" description={getRequestErrorCopy(discoveryQuery.error, "ยังไม่มี public store profile")} action={<button className="button button--ghost" type="button" onClick={() => void discoveryQuery.refetch()}>ลองใหม่</button>} /> : featuredStores.length > 0 ? <div className="store-grid">{featuredStores.map((store) => <StoreCard key={store.slug} store={store} />)}</div> : <EmptyState icon={Compass} title="ยังไม่มีสถานที่ที่เปิด public" description="ร้านที่เปิด Customer profile แล้วจะแสดงใน Explore อัตโนมัติ" />}
-      </section>
-
-      <section className="content-section" aria-labelledby="nearby-title">
-        <SectionHeading id="nearby-title" title="เลือกพื้นที่" action={<Link className="text-link" to="/map">เปิดแผนที่ <ArrowRight size={14} aria-hidden="true" /></Link>} />
-        <div className="area-grid">{areas.map((area, index) => <Link className={`area-card area-card--${index % 3}`} to={`/search?area=${encodeURIComponent(area)}`} key={area}><span>{area}</span><ChevronRight size={16} aria-hidden="true" /></Link>)}</div>
-      </section>
-      {recentSearches.length > 0 && <section className="content-section" aria-labelledby="recent-searches-title"><SectionHeading id="recent-searches-title" title="ค้นหาล่าสุด" /><div className="chip-row">{recentSearches.map((term) => <Link className="chip" to={`/search?q=${encodeURIComponent(term)}`} key={term}><Search size={14} aria-hidden="true" />{term}</Link>)}</div></section>}
-    </div>
+      <div className="button-row">
+        <button className="button button--ghost" type="button" onClick={onRetry}>ลองใหม่</button>
+        <Link className="button button--dark" to="/">ย้อนกลับ</Link>
+      </div>
+    </section>
   );
 }
 
@@ -364,7 +389,10 @@ export function SearchPage() {
 
 export function SavedPage() {
   const savedStoreSlugs = useUiStore((state) => state.savedStoreSlugs);
+  const queryClient = useQueryClient();
   const [savedSnapshots, setSavedSnapshots] = useState<FavoriteStoreRecord[]>([]);
+  const [canonicalNotice, setCanonicalNotice] = useState("");
+  const [removingCanonicalPlaceId, setRemovingCanonicalPlaceId] = useState<string | null>(null);
   const sessionQuery = useQuery({
     queryKey: ["auth", "customer-session", "saved"],
     queryFn: getCustomerSession,
@@ -375,7 +403,7 @@ export function SavedPage() {
   const serverFavoritesQuery = useQuery({
     queryKey: ["customer-favorites", "saved"],
     queryFn: listCustomerFavorites,
-    enabled: customerDataMode === "live" && Boolean(sessionQuery.data),
+    enabled: customerDataMode === "live" && placeApiMode !== "canonical" && Boolean(sessionQuery.data),
     retry: false,
     staleTime: 30_000
   });
@@ -386,7 +414,33 @@ export function SavedPage() {
       staleTime: 60_000
     }))
   });
+  const canonicalSavedPlacesQuery = useQuery<{
+    records: CanonicalSavedPlaceRecord[];
+    unavailableCount: number;
+  }>({
+    queryKey: ["feed", "saved-places", "saved-page", sessionQuery.data?.user.id ?? null],
+    queryFn: async ({ signal }) => {
+      const savedPlaces = await listSavedCanonicalPlaces({ signal });
+      const resolvedPlaces = await Promise.allSettled(
+        savedPlaces.map(async (entry) => ({
+          place: await getPlaceDetail(entry.placeId, { signal }),
+          savedAt: entry.savedAt,
+        })),
+      );
+      const records = resolvedPlaces.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      return {
+        records,
+        unavailableCount: savedPlaces.length - records.length,
+      };
+    },
+    enabled: customerDataMode === "live" && placeApiMode === "canonical" && Boolean(sessionQuery.data),
+    retry: false,
+    staleTime: 30_000,
+  });
   useEffect(() => {
+    if (customerDataMode === "live" && placeApiMode === "canonical") return;
     let active = true;
     void localRepository.listFavorites().then((values) => { if (active) setSavedSnapshots(values); });
     return () => { active = false; };
@@ -396,6 +450,110 @@ export function SavedPage() {
   const serverStores = serverStoreQueries.map((query) => query.data ? mapCustomerStore(query.data) : undefined).filter((store): store is StoreSummary => store !== undefined);
   const allServerStores = serverStores.filter((store) => !savedStores.some((saved) => saved.slug === store.slug) && !snapshotStores.some((snapshot) => snapshot.slug === store.slug));
   const totalSaved = savedStores.length + snapshotStores.length + allServerStores.length;
+
+  const signInToSeeCanonicalSavedPlaces = async () => {
+    setCanonicalNotice("");
+    try {
+      await beginGoSignIn("/saved");
+    } catch {
+      setCanonicalNotice("ยังไม่สามารถเริ่มการเข้าสู่ระบบได้ กรุณาลองใหม่");
+    }
+  };
+
+  const removeCanonicalSavedPlace = async (placeId: string) => {
+    setCanonicalNotice("");
+    setRemovingCanonicalPlaceId(placeId);
+    try {
+      const response = await setCanonicalPlaceSaved(
+        placeId,
+        false,
+        createIdempotencyKey("saved-page-place-remove"),
+      );
+      if (response.placeId !== placeId || response.saved) {
+        throw new Error("canonical-place-remove-state-mismatch");
+      }
+      await Promise.all([
+        canonicalSavedPlacesQuery.refetch(),
+        queryClient.invalidateQueries({
+          queryKey: ["feed", "saved-places", "explore", sessionQuery.data?.user.id ?? null],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["feed", "saved-places", "profile", sessionQuery.data?.user.id ?? null],
+        }),
+      ]);
+      setCanonicalNotice("นำ Place ออกจาก Saved แล้ว");
+    } catch (error) {
+      setCanonicalNotice(
+        error instanceof ApiClientError
+          ? error.message
+          : "ยังไม่สามารถนำ Place ออกจาก Saved ได้ กรุณาลองใหม่",
+      );
+    } finally {
+      setRemovingCanonicalPlaceId(null);
+    }
+  };
+
+  if (customerDataMode === "live" && placeApiMode === "canonical") {
+    const canonicalRecords = canonicalSavedPlacesQuery.data?.records ?? [];
+    const unavailableCount = canonicalSavedPlacesQuery.data?.unavailableCount ?? 0;
+    const canonicalLoading = sessionQuery.isLoading || canonicalSavedPlacesQuery.isLoading;
+
+    return (
+      <div className="page-frame">
+        <PageHeading
+          eyebrow="SAVED / YOUR PLACES"
+          title="รายการที่บันทึกไว้"
+          description="รายการนี้อ่านจาก Core canonical Place save projection ของบัญชีปัจจุบัน"
+        />
+        {canonicalLoading ? (
+          <LoadingState label="กำลังตรวจสอบ session และโหลด Saved Places จาก Core…" />
+        ) : !sessionQuery.data ? (
+          <EmptyState
+            icon={Heart}
+            title="เข้าสู่ระบบเพื่อดูรายการที่บันทึก"
+            description="Saved แบบ canonical ผูกกับ GO session และจะไม่อ่านข้อมูลจาก legacy favorites"
+            action={
+              <button className="button button--dark" type="button" onClick={() => void signInToSeeCanonicalSavedPlaces()}>
+                เข้าสู่ระบบ <ArrowRight size={16} aria-hidden="true" />
+              </button>
+            }
+          />
+        ) : canonicalSavedPlacesQuery.isError ? (
+          <EmptyState
+            icon={CircleHelp}
+            title="โหลดรายการที่บันทึกไม่สำเร็จ"
+            description="Core ยังไม่สามารถส่งรายการ canonical Places กลับมาได้"
+            action={<button className="button button--ghost" type="button" onClick={() => void canonicalSavedPlacesQuery.refetch()}>ลองใหม่</button>}
+          />
+        ) : canonicalRecords.length > 0 ? (
+          <section className="content-section" aria-labelledby="canonical-saved-list-title">
+            <SectionHeading id="canonical-saved-list-title" title={`${canonicalRecords.length} สถานที่ที่บันทึกไว้`} />
+            <div className="store-list">
+              {canonicalRecords.map((record) => (
+                <CanonicalSavedPlaceCard
+                  key={record.place.id}
+                  record={record}
+                  onRemove={(placeId) => void removeCanonicalSavedPlace(placeId)}
+                  removing={removingCanonicalPlaceId === record.place.id}
+                />
+              ))}
+            </div>
+            {unavailableCount > 0 && <p className="guardrail-note" role="status">{unavailableCount} รายการไม่พร้อมแสดงใน public projection จึงถูกซ่อนไว้ชั่วคราว</p>}
+            {canonicalNotice && <p className="inline-notice" role="status">{canonicalNotice}</p>}
+          </section>
+        ) : (
+          <EmptyState
+            icon={Heart}
+            title="ยังไม่มีรายการที่บันทึก"
+            description="กด Save บน canonical Place จาก Explore แล้วรายการจะมาอยู่ตรงนี้"
+            action={<Link className="button button--dark" to="/">เริ่มสำรวจ <ArrowRight size={16} aria-hidden="true" /></Link>}
+          />
+        )}
+        {!sessionQuery.data && canonicalNotice && <p className="inline-notice" role="alert">{canonicalNotice}</p>}
+      </div>
+    );
+  }
+
   return <div className="page-frame"><PageHeading eyebrow="SAVED / YOUR PLACES" title="รายการที่บันทึกไว้" description="เก็บร้านและประสบการณ์ที่อยากกลับมาไว้ในที่เดียว" />{totalSaved > 0 ? <section className="content-section" aria-labelledby="saved-list-title"><SectionHeading id="saved-list-title" title={`${totalSaved} สถานที่ที่บันทึกไว้`} /><div className="store-list">{savedStores.map((store) => <StoreCard key={store.slug} store={store} />)}{snapshotStores.map((store) => <SavedStoreCard key={store.slug} store={store} />)}{allServerStores.map((store) => <StoreCard key={store.slug} store={store} />)}</div></section> : <EmptyState icon={Heart} title="ยังไม่มีรายการที่บันทึก" description="กด Save บนร้านที่คุณสนใจ แล้วรายการจะมาอยู่ตรงนี้" action={<Link className="button button--dark" to="/">เริ่มสำรวจ <ArrowRight size={16} aria-hidden="true" /></Link>} />}</div>;
 }
 
@@ -529,9 +687,16 @@ export function MyPage() {
   const serverFavoritesQuery = useQuery({
     queryKey: ["customer-favorites", "profile"],
     queryFn: listCustomerFavorites,
-    enabled: customerDataMode === "live" && sessionQuery.isFetched && Boolean(session),
+    enabled: customerDataMode === "live" && placeApiMode !== "canonical" && sessionQuery.isFetched && Boolean(session),
     retry: false,
     staleTime: 30_000
+  });
+  const canonicalSavedPlacesCountQuery = useQuery({
+    queryKey: ["feed", "saved-places", "profile", session?.user.id ?? null],
+    queryFn: ({ signal }: { signal: AbortSignal }) => listSavedCanonicalPlaces({ signal }),
+    enabled: customerDataMode === "live" && placeApiMode === "canonical" && Boolean(session),
+    retry: false,
+    staleTime: 30_000,
   });
   const signOut = async () => {
     setNotice("");
@@ -559,11 +724,17 @@ export function MyPage() {
     .join("")
     .slice(0, 2)
     .toUpperCase() || "AG";
-  const profileDataPending = localProfileQuery.isLoading || (customerDataMode === "live" && !sessionQuery.isFetched) || serverFavoritesQuery.isLoading;
-  const savedPlaceCount = profileDataPending ? null : new Set([
-    ...(localProfileQuery.data?.favoriteSlugs ?? []),
-    ...(serverFavoritesQuery.data ?? [])
-  ]).size;
+  const profileDataPending = localProfileQuery.isLoading
+    || (customerDataMode === "live" && !sessionQuery.isFetched)
+    || (placeApiMode === "canonical" ? canonicalSavedPlacesCountQuery.isLoading : serverFavoritesQuery.isLoading);
+  const savedPlaceCount = profileDataPending
+    ? null
+    : placeApiMode === "canonical" && customerDataMode === "live"
+      ? canonicalSavedPlacesCountQuery.isError ? null : canonicalSavedPlacesCountQuery.data?.length ?? 0
+      : new Set([
+        ...(localProfileQuery.data?.favoriteSlugs ?? []),
+        ...(serverFavoritesQuery.data ?? [])
+      ]).size;
   return (
     <div className="page-frame">
       <PageHeading eyebrow="MY PAGE / PROFILE" title="พื้นที่ของคุณ" description="จัดการ profile, preferences และความคืบหน้าจาก customer account" />
@@ -641,7 +812,7 @@ export function StoreDetailPage() {
     });
   }, [serverFavoritesQuery, sessionQuery.data]);
   if (customerDataMode === "live" && storeQuery.isLoading) return <div className="page-frame"><LoadingState label="กำลังโหลด public store profile…" /></div>;
-  if (customerDataMode === "live" && storeQuery.isError) return <div className="page-frame"><EmptyState icon={CircleHelp} title="โหลดสถานที่ไม่สำเร็จ" description={getRequestErrorCopy(storeQuery.error, "ร้านนี้ยังไม่มี public profile")} action={<button className="button button--ghost" type="button" onClick={() => void storeQuery.refetch()}>ลองใหม่</button>} /></div>;
+  if (customerDataMode === "live" && storeQuery.isError) return <div className="page-frame"><StoreProjectionFallback storeSlug={storeSlug} onRetry={() => void storeQuery.refetch()} /></div>;
   if (!store) return <div className="page-frame"><EmptyState icon={CircleHelp} title="ไม่พบสถานที่นี้" description="ลิงก์อาจหมดอายุหรือร้านนี้ยังไม่เปิด public profile" action={<Link className="button button--dark" to="/">กลับ Explore</Link>} /></div>;
   const mapQuery = store.latitude !== null && store.latitude !== undefined && store.longitude !== null && store.longitude !== undefined
     ? `${store.latitude},${store.longitude}`
@@ -780,7 +951,7 @@ export function BookingPage() {
     [liveTimeOptions, time]
   );
   if (customerDataMode === "live" && storeQuery.isLoading) return <div className="page-frame"><p className="muted-label">กำลังโหลด public store profile…</p></div>;
-  if (customerDataMode === "live" && storeQuery.isError) return <div className="page-frame"><EmptyState icon={CircleHelp} title="โหลดสถานที่ไม่สำเร็จ" description={getRequestErrorCopy(storeQuery.error, "ร้านนี้ยังไม่มี public profile")} action={<button className="button button--ghost" type="button" onClick={() => void storeQuery.refetch()}>ลองใหม่</button>} /></div>;
+  if (customerDataMode === "live" && storeQuery.isError) return <div className="page-frame"><StoreProjectionFallback storeSlug={storeSlug} title="ข้อมูลการจองยังไม่พร้อม" onRetry={() => void storeQuery.refetch()} /></div>;
   if (!store) return <div className="page-frame"><EmptyState icon={CalendarDays} title="ไม่พบร้านสำหรับการจอง" description="กลับไปค้นหาร้านอื่นแล้วลองใหม่อีกครั้ง" action={<Link className="button button--dark" to="/search">ค้นหาร้าน</Link>} /></div>;
   const updateDate = (nextDate: string) => {
     const next = new URLSearchParams(searchParams);
@@ -981,7 +1152,7 @@ export function StoreMenuPage() {
   const [notice, setNotice] = useState("");
   const [selectedProduct, setSelectedProduct] = useState<PublicCatalogProduct | null>(null);
   if (customerDataMode === "live" && storeQuery.isLoading) return <div className="page-frame"><p className="muted-label">กำลังโหลด public store profile…</p></div>;
-  if (customerDataMode === "live" && storeQuery.isError) return <div className="page-frame"><EmptyState icon={CircleHelp} title="โหลดสถานที่ไม่สำเร็จ" description={getRequestErrorCopy(storeQuery.error, "ร้านนี้ยังไม่มี public profile")} action={<button className="button button--ghost" type="button" onClick={() => void storeQuery.refetch()}>ลองใหม่</button>} /></div>;
+  if (customerDataMode === "live" && storeQuery.isError) return <div className="page-frame"><StoreProjectionFallback storeSlug={storeSlug} title="ข้อมูลเมนูยังไม่พร้อม" onRetry={() => void storeQuery.refetch()} /></div>;
   if (!store) return <div className="page-frame"><EmptyState icon={ShoppingBag} title="ไม่พบเมนู" description="กลับไปค้นหาร้านอื่นแล้วลองใหม่อีกครั้ง" action={<Link className="button button--dark" to="/search">ค้นหาร้าน</Link>} /></div>;
   const menuItems = [{ name: "House selection", price: "฿ 180", description: "เมนูแนะนำสำหรับเริ่มต้น" }, { name: "Seasonal pairing", price: "฿ 260", description: "เปลี่ยนตามวัตถุดิบของวัน" }, { name: "Takeaway set", price: "฿ 320", description: "จัดเตรียมสำหรับรับกลับ" }];
   const addItemToCart = (item: { productId: string; name: string; description: string; unitPriceMinor: number; currency: string; variantId?: string; modifierIds?: string[] }) => {

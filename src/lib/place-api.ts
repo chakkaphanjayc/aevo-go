@@ -2,11 +2,15 @@ import {
   placeDetailResponseSchema,
   placeMapOverlayResponseSchema,
   placeNearbyResponseSchema,
+  placeSaveResponseSchema,
   placeSearchResponseSchema,
+  savedPlacesResponseSchema,
   type PlaceDetail,
   type PlaceMapOverlayResponse,
   type PlaceNearbyResponse,
-  type PlaceSearchResponse
+  type PlaceSaveResponse,
+  type PlaceSearchResponse,
+  type SavedPlacesResponse
 } from "@/contracts/place";
 import { requestJson } from "@/lib/api-client";
 
@@ -22,6 +26,7 @@ export interface PlaceMapOverlayQuery extends PlaceBoundsQuery {
   query?: string;
   categoryIds?: string[];
   limit?: number;
+  savedOnly?: boolean;
 }
 
 export interface PlaceSearchQuery {
@@ -32,6 +37,7 @@ export interface PlaceSearchQuery {
   sort?: "relevance" | "distance" | "rating" | "updated";
   cursor?: string;
   limit?: number;
+  savedOnly?: boolean;
 }
 
 export interface PlaceNearbyQuery {
@@ -73,7 +79,8 @@ export async function getPlaceMapOverlay(
       zoom: query.zoom,
       q: query.query,
       categoryId: query.categoryIds?.join(","),
-      limit: query.limit
+      limit: query.limit,
+      savedOnly: query.savedOnly ? "true" : undefined
     }),
     { signal: options.signal }
   );
@@ -92,7 +99,8 @@ export async function searchPlaces(
       categoryId: query.categoryIds?.join(","),
       sort: query.sort,
       cursor: query.cursor,
-      limit: query.limit
+      limit: query.limit,
+      savedOnly: query.savedOnly ? "true" : undefined
     }),
     { signal: options.signal }
   );
@@ -126,4 +134,27 @@ export async function getPlaceDetail(
     { signal: options.signal }
   );
   return parse(payload, placeDetailResponseSchema).place;
+}
+
+export async function listSavedCanonicalPlaces(
+  options: { signal?: AbortSignal } = {}
+): Promise<SavedPlacesResponse["savedPlaces"]> {
+  const payload = await requestJson<unknown>(
+    "/api/v1/public/me/saved-places",
+    { signal: options.signal }
+  );
+  return parse(payload, savedPlacesResponseSchema).savedPlaces;
+}
+
+export async function setCanonicalPlaceSaved(
+  placeId: string,
+  saved: boolean,
+  idempotencyKey: string
+): Promise<PlaceSaveResponse> {
+  const payload = await requestJson<unknown>(
+    "/api/v1/public/places/" + encodeURIComponent(placeId) + "/save",
+    { method: saved ? "POST" : "DELETE" },
+    { idempotencyKey }
+  );
+  return parse(payload, placeSaveResponseSchema);
 }

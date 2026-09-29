@@ -7,7 +7,8 @@ import { fileURLToPath, URL } from "node:url";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const apiTarget = env.VITE_API_BASE_URL?.trim() || "http://localhost:4000";
-  const tunnelEnabled = ["1", "true", "yes", "on"].includes((env.AEVO_DEV_TUNNEL ?? env.VITE_DEV_TUNNEL)?.trim().toLowerCase() ?? "");
+  const tunnelRequested = ["1", "true", "yes", "on"].includes((env.AEVO_DEV_TUNNEL ?? env.VITE_DEV_TUNNEL)?.trim().toLowerCase() ?? "");
+  const tunnelAutoStart = ["1", "true", "yes", "on"].includes(env.AEVO_DEV_TUNNEL_AUTOSTART?.trim().toLowerCase() ?? "");
   const accountsTarget = env.VITE_ACCOUNTS_URL?.trim() || "http://localhost:8787";
 
   return {
@@ -15,11 +16,11 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
       cloudflare({
-        tunnel: tunnelEnabled
+        tunnel: tunnelRequested ? (tunnelAutoStart ? { autoStart: true } : true) : false
       })
     ],
     define: {
-      "import.meta.env.VITE_DEV_TUNNEL": JSON.stringify(tunnelEnabled ? "1" : "0")
+      "import.meta.env.VITE_DEV_TUNNEL": JSON.stringify(tunnelRequested ? "1" : "0")
     },
     resolve: {
       alias: {

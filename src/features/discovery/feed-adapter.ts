@@ -1,5 +1,25 @@
-import type { FeedItem, FeedPlaceItem, FeedReasonCode, FeedTraceItem } from "@/contracts/feed";
-import type { DiscoveryItem, DiscoveryPlace, DiscoveryTrace } from "./types";
+import type {
+  FeedItem,
+  FeedModule,
+  FeedPlaceItem,
+  FeedReasonCode,
+  FeedTraceItem,
+} from "@/contracts/feed";
+import { canonicalPlaceIdSchema } from "@/contracts/place";
+import type {
+  DiscoveryCandidateItem,
+  DiscoveryItem,
+  DiscoveryPlace,
+  DiscoveryTrace,
+} from "./types";
+import { isDiscoveryCandidateItem } from "./types";
+
+export interface DiscoveryModuleView {
+  moduleId: FeedModule["moduleId"];
+  reasonCode: FeedModule["reasonCode"];
+  items: DiscoveryCandidateItem[];
+  degraded?: boolean;
+}
 
 function discoveryReason(reasonCode: FeedReasonCode, area: string) {
   switch (reasonCode) {
@@ -65,7 +85,17 @@ function coreTraceToDiscovery(item: FeedTraceItem, feedSessionId: string): Disco
   };
 }
 
-function corePlaceToDiscovery(item: FeedPlaceItem, feedSessionId: string): DiscoveryPlace {
+function corePlaceToDiscovery(
+  item: FeedPlaceItem,
+  feedSessionId: string,
+  savedCanonicalPlaceIds?: ReadonlySet<string>,
+): DiscoveryPlace {
+  const reference = item.placeReference;
+  const canonicalPlaceId =
+    reference && (reference.resolutionStatus === "resolved" || reference.resolutionStatus === "redirected")
+      ? canonicalPlaceIdSchema.safeParse(reference.canonicalPlaceId)
+      : null;
+
   return {
     id: item.id,
     itemType: "PLACE",
@@ -73,24 +103,73 @@ function corePlaceToDiscovery(item: FeedPlaceItem, feedSessionId: string): Disco
     trackingToken: item.itemToken,
     feedReasonCode: item.reasonCode,
     slug: item.slug,
+    ...(canonicalPlaceId?.success ? { canonicalPlaceId: canonicalPlaceId.data } : {}),
     name: item.name,
     category: item.category,
     area: item.area,
     priceLabel: "—",
     openNow: null,
     imageUrl: item.imageUrl,
-    venueSlug: item.slug,
     isAevoPlayPartner: false,
     description: item.description,
     traceCount: 0,
-    saved: false,
+    saved: canonicalPlaceId?.success === true
+      && savedCanonicalPlaceIds?.has(canonicalPlaceId.data) === true,
     comments: [],
     reason: discoveryReason(item.reasonCode, item.area),
   };
 }
 
-export function coreFeedItemToDiscovery(item: FeedItem, feedSessionId: string): DiscoveryItem {
+export function coreFeedItemToDiscovery(
+  item: FeedItem,
+  feedSessionId: string,
+  savedCanonicalPlaceIds?: ReadonlySet<string>,
+): DiscoveryCandidateItem {
   return item.itemType === "TRACE"
     ? coreTraceToDiscovery(item, feedSessionId)
-    : corePlaceToDiscovery(item, feedSessionId);
+    : corePlaceToDiscovery(item, feedSessionId, savedCanonicalPlaceIds);
+}
+
+function feedModuleItemKey(itemType: string, itemId: string, itemToken: string): string {
+  return `${itemType}:${itemId}:${itemToken}`;
+}
+
+export function feedModulesToDiscovery(
+  modules: readonly FeedModule[] | undefined,
+  items: readonly DiscoveryItem[],
+): DiscoveryModuleView[] {
+  const candidateItems = items.filter(isDiscoveryCandidateItem);
+  if (!modules || modules.length === 0 || candidateItems.length === 0) return [];
+
+  const itemsByKey = new Map(
+    candidateItems.map((item) => [
+      feedModuleItemKey(item.itemType, item.id, item.trackingToken ?? ""),
+      item,
+    ]),
+  );
+  const claimedItemKeys = new Set<string>();
+
+  return modules.flatMap((module) => {
+    const resolvedItems = module.items.flatMap((reference) => {
+      const referenceKey = feedModuleItemKey(
+        reference.itemType,
+        reference.itemId,
+        reference.itemToken,
+      );
+      if (claimedItemKeys.has(referenceKey)) return [];
+      const item = itemsByKey.get(
+        referenceKey,
+      );
+      if (item) claimedItemKeys.add(referenceKey);
+      return item ? [item] : [];
+    });
+    return resolvedItems.length > 0
+      ? [{
+          moduleId: module.moduleId,
+          reasonCode: module.reasonCode,
+          items: resolvedItems,
+          ...(module.degraded !== undefined ? { degraded: module.degraded } : {}),
+        }]
+      : [];
+  });
 }

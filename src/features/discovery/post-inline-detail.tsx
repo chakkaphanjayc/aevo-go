@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bookmark,
@@ -22,6 +22,7 @@ export interface PostInlineDetailProps {
   onOpenMedia: (index: number) => void;
   onLike?: () => void;
   onShare?: () => void;
+  commentFocusRequestKey?: number;
   onCommentSubmit?: (body: string, parentId?: string) => Promise<void>;
   onCommentEdit?: (commentId: string, body: string) => Promise<void>;
   onCommentDelete?: (commentId: string) => Promise<void>;
@@ -37,6 +38,7 @@ export function PostInlineDetail({
   onOpenMedia,
   onLike,
   onShare,
+  commentFocusRequestKey = 0,
   onCommentSubmit,
   onCommentEdit,
   onCommentDelete,
@@ -46,7 +48,45 @@ export function PostInlineDetail({
   const [saved, setSaved] = useState(false);
   const [activeImage, setActiveImage] = useState(0);
   const [imageError, setImageError] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const commentsRef = useRef<HTMLElement>(null);
   const activeSrc = images[activeImage];
+
+  useEffect(() => {
+    setImageLoaded(false);
+  }, [activeImage, activeSrc]);
+
+  const focusComments = () => {
+    const section = commentsRef.current;
+    if (!section) return;
+    const scrollContainer = section.closest<HTMLElement>(".explore-detail-panel__body");
+    if (scrollContainer && scrollContainer.scrollHeight > scrollContainer.clientHeight + 1) {
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const sectionRect = section.getBoundingClientRect();
+      scrollContainer.scrollTo({
+        top: Math.max(0, scrollContainer.scrollTop + sectionRect.top - containerRect.top - 16),
+        behavior: "smooth",
+      });
+    }
+    section.focus({ preventScroll: true });
+  };
+
+  useLayoutEffect(() => {
+    if (commentFocusRequestKey <= 0) return;
+    if (typeof window.requestAnimationFrame !== "function") {
+      const timeoutId = window.setTimeout(focusComments, 0);
+      return () => window.clearTimeout(timeoutId);
+    }
+    let secondFrame: number | null = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      focusComments();
+      secondFrame = window.requestAnimationFrame(focusComments);
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [commentFocusRequestKey]);
 
   return (
     <aside className="explore-detail-panel post-inline-detail" aria-label={`รายละเอียดโพสต์ของ ${post.author.name}`}>
@@ -67,8 +107,8 @@ export function PostInlineDetail({
       </header>
       <div className="explore-detail-panel__body explore-detail-panel__body--animated">
         <section className="post-inline-detail__media" aria-label={`ภาพโพสต์ของ ${post.author.name}`}>
-          <button className="post-inline-detail__media-button" type="button" onClick={() => onOpenMedia(activeImage)} aria-label={`เปิดภาพ ${activeImage + 1} ของ ${Math.max(images.length, post.mediaLabels.length, 1)}`}>
-            {activeSrc && !imageError ? <img src={activeSrc} alt={`${post.author.name} รูปที่ ${activeImage + 1}`} onError={() => setImageError(true)} /> : <span>{post.mediaLabels[activeImage] ?? "POST"}</span>}
+          <button className={`post-inline-detail__media-button${imageLoaded ? " is-image-ready" : ""}`} type="button" onClick={() => onOpenMedia(activeImage)} aria-label={`เปิดภาพ ${activeImage + 1} ของ ${Math.max(images.length, post.mediaLabels.length, 1)}`}>
+            {activeSrc && !imageError ? <img src={activeSrc} alt={`${post.author.name} รูปที่ ${activeImage + 1}`} onLoad={() => setImageLoaded(true)} onError={() => setImageError(true)} /> : <span>{post.mediaLabels[activeImage] ?? "POST"}</span>}
             <span className="post-inline-detail__media-count">{activeImage + 1} / {Math.max(images.length, post.mediaLabels.length, 1)}</span>
           </button>
           {Math.max(images.length, post.mediaLabels.length, 1) > 1 && <div className="post-inline-detail__thumbs" role="tablist" aria-label="รูปภาพโพสต์">
@@ -82,17 +122,17 @@ export function PostInlineDetail({
         </section>
         {post.attachedObject && <button className="discovery-attached-object post-inline-detail__attached" type="button" onClick={() => onOpenMedia(0)}><span className="discovery-attached-object__type">{post.attachedObject.itemType}</span><span><strong>{post.attachedObject.title}</strong><small>{post.attachedObject.subtitle}</small></span><MapPin size={16} aria-hidden="true" /></button>}
         <div className="media-conversation-modal__interactions post-inline-detail__interactions" aria-label="การกระทำกับโพสต์">
-          <button className={liked ? "is-selected" : ""} type="button" onClick={onLike} aria-pressed={liked}><Heart size={17} fill={liked ? "currentColor" : "none"} aria-hidden="true" />{likeCount}</button>
-          <button className={saved ? "is-selected" : ""} type="button" onClick={() => setSaved((current) => !current)} aria-pressed={saved}>{saved ? <Check size={17} aria-hidden="true" /> : <Bookmark size={17} aria-hidden="true" />}{saved ? "บันทึกแล้ว" : "บันทึก"}</button>
-          <button type="button" onClick={() => document.getElementById("post-inline-comments")?.scrollIntoView({ behavior: "smooth", block: "start" })}><MessageCircle size={17} aria-hidden="true" />{post.comments.length}</button>
+          <button className={liked ? "is-selected" : ""} type="button" onClick={onLike} aria-label={liked ? "ยกเลิกถูกใจ" : "ถูกใจ"} aria-pressed={liked}><Heart size={17} fill={liked ? "currentColor" : "none"} aria-hidden="true" /><span className="post-inline-detail__interaction-label">ถูกใจ</span>{likeCount}</button>
+          <button className={saved ? "is-selected" : ""} type="button" onClick={() => setSaved((current) => !current)} aria-label={saved ? "นำโพสต์ออกจากรายการบันทึก" : "บันทึกโพสต์"} aria-pressed={saved}>{saved ? <Check size={17} aria-hidden="true" /> : <Bookmark size={17} aria-hidden="true" />}<span className="post-inline-detail__interaction-label">{saved ? "บันทึกแล้ว" : "บันทึก"}</span></button>
+          <button type="button" aria-label="ไปที่ความคิดเห็น" onClick={focusComments}><MessageCircle size={17} aria-hidden="true" /><span className="post-inline-detail__interaction-label">ความคิดเห็น</span>{post.comments.length}</button>
         </div>
-        <section className="post-inline-detail__comments" id="post-inline-comments" aria-labelledby="post-inline-comments-title">
+        <section ref={commentsRef} className="post-inline-detail__comments" id="post-inline-comments" aria-labelledby="post-inline-comments-title" tabIndex={-1}>
           <div className="explore-detail-section__heading"><div><span className="eyebrow">DISCUSSION</span><h3 id="post-inline-comments-title">ความคิดเห็น</h3></div><UserPlus size={16} aria-hidden="true" /></div>
-          <CommentStream comments={post.comments} showComposer={Boolean(onCommentSubmit)} onSubmit={onCommentSubmit} onEdit={onCommentEdit} onDelete={onCommentDelete} onFollowCommenter={onFollowCommenter} onViewAll={() => undefined} />
-          {!demoMode && <p className="muted-label">ความคิดเห็น live จะแสดงเมื่อ Customer Gateway พร้อม</p>}
+          <CommentStream comments={post.comments} showComposer={Boolean(onCommentSubmit)} onSubmit={onCommentSubmit} onEdit={onCommentEdit} onDelete={onCommentDelete} onFollowCommenter={onFollowCommenter} />
+          {!demoMode && <p className="muted-label">ความคิดเห็นจากผู้คนจะปรากฏเมื่อข้อมูลการสนทนาพร้อมใช้งาน</p>}
         </section>
       </div>
-      <footer className="explore-detail-panel__footer"><button className="button button--ghost" type="button" onClick={() => setSaved((current) => !current)}><Bookmark size={15} aria-hidden="true" />{saved ? "บันทึกแล้ว" : "บันทึกโพสต์"}</button><button className="button button--dark explore-detail-panel__start" type="button" onClick={onShare}><Share2 size={15} aria-hidden="true" />แชร์บันทึกนี้</button></footer>
+      <footer className="explore-detail-panel__footer post-inline-detail__footer"><button className="icon-button icon-button--subtle explore-detail-panel__save" type="button" onClick={() => setSaved((current) => !current)} aria-pressed={saved} aria-label={saved ? "นำโพสต์ออกจากรายการบันทึก" : "บันทึกโพสต์"}>{saved ? <Check size={17} aria-hidden="true" /> : <Bookmark size={17} aria-hidden="true" />}</button><button className="button button--white-prismatic explore-detail-panel__start" type="button" onClick={onShare}><Share2 size={16} aria-hidden="true" />แชร์บันทึกนี้</button></footer>
     </aside>
   );
 }

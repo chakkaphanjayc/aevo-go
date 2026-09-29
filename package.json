@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 4324",
-    "dev:tunnel": "AEVO_DEV_TUNNEL=1 vite --host 0.0.0.0 --port 4324",
+    "dev:tunnel": "AEVO_DEV_TUNNEL=1 AEVO_DEV_TUNNEL_AUTOSTART=1 vite --host 0.0.0.0 --port 4324",
     "dev:demo": "VITE_GO_DATA_MODE=demo VITE_OSM_OVERPASS_MODE=mock bun run dev",
     "build": "tsc -b && vite build",
     "build:worker": "vite build",

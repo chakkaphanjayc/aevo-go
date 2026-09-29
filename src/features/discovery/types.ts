@@ -1,4 +1,6 @@
 import type { FeedReasonCode } from "@/contracts/feed";
+import type { CanonicalPlaceId } from "@/contracts/place";
+import type { DiscoveryCandidateType } from "@/contracts/discovery";
 
 export type DiscoveryTab = "for_you" | "following" | "nearby";
 
@@ -10,6 +12,8 @@ export type DiscoveryReasonCode =
   | "REMIXED_TRACE";
 
 export type DiscoveryItemType = "TRACE" | "PLACE" | "POST" | "TRACER";
+/** Live Core candidates are entity-only. POST/TRACER remain demo/detail compatibility types. */
+export type DiscoveryCandidateItemType = DiscoveryCandidateType;
 
 export interface DiscoveryReason {
   code: DiscoveryReasonCode;
@@ -112,6 +116,12 @@ export interface DiscoveryTrace extends DiscoveryBase {
 export interface DiscoveryPlace extends DiscoveryBase {
   itemType: "PLACE";
   slug: string;
+  /**
+   * The canonical Place identity is intentionally separate from the Feed
+   * item/legacy slug. It is only present when the server resolved an explicit
+   * reference mapping; the client never derives it from a slug or name.
+   */
+  canonicalPlaceId?: CanonicalPlaceId;
   name: string;
   category: string;
   area: string;
@@ -160,6 +170,12 @@ export type DiscoveryItem =
   | DiscoveryPlace
   | DiscoveryPost
   | DiscoveryTracer;
+
+export type DiscoveryCandidateItem = DiscoveryTrace | DiscoveryPlace;
+
+export function isDiscoveryCandidateItem(item: DiscoveryItem): item is DiscoveryCandidateItem {
+  return item.itemType === "TRACE" || item.itemType === "PLACE";
+}
 
 export type DiscoveryAction =
   | "trace"
